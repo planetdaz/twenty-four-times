@@ -3,7 +3,8 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_GC9A01A.h>
 
-// Just a test program to put an animation on the display
+// Proof of concept: Three rotating clock hands on a 240x240 circular display
+// Based on the twenty-four-times simulation
 
 // 240x240 RGB565 buffer (~115 KB)
 GFXcanvas16 canvas(240, 240);
@@ -20,25 +21,92 @@ GFXcanvas16 canvas(240, 240);
 
 Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
 
+// ---- Display geometry ----
+const int DISPLAY_WIDTH = 240;
+const int DISPLAY_HEIGHT = 240;
+const int CENTER_X = 120;
+const int CENTER_Y = 120;
+
+// Physical display parameters (from simulation)
+// visibleDiameter = 34.6mm, which corresponds to the inner safe area
+// The bezel covers the outer edge, so we use innerRadius for hand length
+const float VISIBLE_DIAMETER_MM = 34.6;
+const float CYLINDER_OD_MM = 44.0;
+
+// Calculate maxR as the visible radius in pixels
+// The display is 240x240, so radius is 120 pixels
+// We scale to the visible area accounting for bezel
+const int MAX_RADIUS = 120;  // Full display radius
+const int INNER_RADIUS = (int)(MAX_RADIUS * (VISIBLE_DIAMETER_MM / CYLINDER_OD_MM));  // ~94 pixels
+
+// Hand parameters (from simulation)
+// Normal hands: 92% of inner radius
+// Thin hand (3rd hand): 80% thickness of normal
+const float HAND_LENGTH_NORMAL = INNER_RADIUS * 0.92;
+const float HAND_THICKNESS_NORMAL = 3.0;
+const float HAND_THICKNESS_THIN = 2.4;  // 80% of normal
+
+// Hand angles (in degrees, 0 = up/north, increases clockwise)
+float hand1Angle = 0.0;
+float hand2Angle = 120.0;
+float hand3Angle = 240.0;
+
+// Rotation speeds (degrees per frame)
+const float HAND1_SPEED = 1.2;   // Fastest
+const float HAND2_SPEED = 0.8;   // Medium
+const float HAND3_SPEED = 0.5;   // Slowest
+
+// FPS tracking
 unsigned long fpsLastTime = 0;
 unsigned long fpsFrames = 0;
 
-void flashLed(uint8_t times, uint16_t delayMs) {
-  for (uint8_t i = 0; i < times; i++) {
-    digitalWrite(LED_PIN, HIGH);
-    delay(delayMs);
-    digitalWrite(LED_PIN, LOW);
-    delay(delayMs);
+// ---- Helper functions ----
+
+// Draw a clock hand from center to angle
+// angle: degrees, 0 = up, clockwise positive
+// length: length of hand in pixels
+// thickness: line thickness
+// color: RGB565 color
+void drawHand(int cx, int cy, float angleDeg, float length, float thickness, uint16_t color) {
+  // Convert angle to radians (subtract 90 to make 0 degrees point up)
+  float angleRad = (angleDeg - 90.0) * PI / 180.0;
+
+  // Calculate end point
+  int x2 = cx + cos(angleRad) * length;
+  int y2 = cy + sin(angleRad) * length;
+
+  // Draw thick line by drawing multiple parallel lines
+  // For round cap effect, we'll draw the main line and add circles at the end
+  int halfThickness = (int)(thickness / 2.0);
+
+  // Draw the main line with thickness
+  for (int offset = -halfThickness; offset <= halfThickness; offset++) {
+    // Calculate perpendicular offset
+    float perpAngle = angleRad + PI / 2.0;
+    int cx_offset = cx + cos(perpAngle) * offset;
+    int cy_offset = cy + sin(perpAngle) * offset;
+    int x2_offset = x2 + cos(perpAngle) * offset;
+    int y2_offset = y2 + sin(perpAngle) * offset;
+
+    canvas.drawLine(cx_offset, cy_offset, x2_offset, y2_offset, color);
   }
+
+  // Draw round caps
+  canvas.fillCircle(cx, cy, halfThickness, color);
+  canvas.fillCircle(x2, y2, halfThickness, color);
 }
 
 void setup() {
-  // ---- LED sanity blink ----
-  pinMode(LED_PIN, OUTPUT);
-  flashLed(5, 80);
-
   Serial.begin(115200);
   delay(200);
+
+  Serial.println("Twenty-Four Times - Clock Hands Proof of Concept");
+  Serial.print("Inner radius: ");
+  Serial.print(INNER_RADIUS);
+  Serial.println(" pixels");
+  Serial.print("Hand length: ");
+  Serial.print(HAND_LENGTH_NORMAL);
+  Serial.println(" pixels");
 
   // ---- SPI ----
   SPI.begin(tft_scl, -1, tft_sda);
@@ -49,58 +117,41 @@ void setup() {
 }
 
 void loop() {
-  static float angle = 0;
-  static float pulse = 0;
-
-  const int cx = 120;
-  const int cy = 120;
-  const int maxR = 118;
-
+  // Clear canvas
   canvas.fillScreen(GC9A01A_BLACK);
 
-  // ---- pulse shaping ----
-  float s = (sin(pulse) + 1.0f) * 0.5f;   // 0..1
-  float eased = pow(s, 3.0f);            // sharp attack, slow decay
+  // Optional: Draw reference circles to show the safe area
+  // Outer circle (display edge)
+  canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(0, 0, 64));
+  // Inner safe circle (visible area)
+  canvas.drawCircle(CENTER_X, CENTER_Y, INNER_RADIUS, tft.color565(0, 64, 128));
 
-  int baseR = maxR - 10;
-  int pulseR = baseR + eased * 12;       // BIG size change
-  int thickness = 2 + eased * 6;         // thick on beat
+  // Draw the three clock hands
+  // Hand color: dark gray/black (#111 from simulation)
+  uint16_t handColor = tft.color565(17, 17, 17);
 
-  // color brightness pulse (blue → cyan)
-  uint16_t pulseColor = tft.color565(
-    0,
-    100 + eased * 155,
-    200 + eased * 55
-  );
+  // Draw hands 1 and 2 with normal thickness
+  drawHand(CENTER_X, CENTER_Y, hand1Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
+  drawHand(CENTER_X, CENTER_Y, hand2Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
 
-  // ---- main pulse ring ----
-  for (int w = 0; w < thickness; w++) {
-    canvas.drawCircle(cx, cy, pulseR - w, pulseColor);
-  }
+  // Draw hand 3 with thin thickness
+  drawHand(CENTER_X, CENTER_Y, hand3Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
-  // ---- outer glow ----
-  for (int g = 0; g < 6; g++) {
-    int r = pulseR + g + 2;
-    uint16_t glow = tft.color565(0, 30, 60 - g * 8);
-    canvas.drawCircle(cx, cy, r, glow);
-  }
+  // Draw center dot
+  canvas.fillCircle(CENTER_X, CENTER_Y, 3, tft.color565(128, 128, 128));
 
-  // ---- orbiting dots ----
-  for (int i = 0; i < 3; i++) {
-    float a = angle + i * TWO_PI / 3;
-    int x = cx + cos(a) * (maxR - 14);
-    int y = cy + sin(a) * (maxR - 14);
-    canvas.fillCircle(x, y, 5, GC9A01A_GREEN);
-  }
+  // Present frame to display
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
-  // ---- center dot ----
-  canvas.fillCircle(cx, cy, 4, GC9A01A_RED);
+  // Update hand angles
+  hand1Angle += HAND1_SPEED;
+  hand2Angle += HAND2_SPEED;
+  hand3Angle += HAND3_SPEED;
 
-  // ---- present frame ----
-  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), 240, 240);
-
-  angle += 0.045;
-  pulse += 0.06;     // slower = calmer, faster = heartbeat
+  // Keep angles in 0-360 range
+  if (hand1Angle >= 360.0) hand1Angle -= 360.0;
+  if (hand2Angle >= 360.0) hand2Angle -= 360.0;
+  if (hand3Angle >= 360.0) hand3Angle -= 360.0;
 
   // ---- FPS tracking ----
   fpsFrames++;
