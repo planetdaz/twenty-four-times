@@ -9,9 +9,6 @@
 // 240x240 RGB565 buffer (~115 KB)
 GFXcanvas16 canvas(240, 240);
 
-// ---- LED ----
-#define LED_PIN 2   // D0 / GPIO2 / physical pin 1
-
 // ---- TFT pin names ----
 #define tft_rst  4   // D2 / GPIO4 / pin 3
 #define tft_cs   5   // D3 / GPIO5 / pin 4
@@ -27,22 +24,13 @@ const int DISPLAY_HEIGHT = 240;
 const int CENTER_X = 120;
 const int CENTER_Y = 120;
 
-// Physical display parameters (from simulation)
-// visibleDiameter = 34.6mm, which corresponds to the inner safe area
-// The bezel covers the outer edge, so we use innerRadius for hand length
-const float VISIBLE_DIAMETER_MM = 34.6;
-const float CYLINDER_OD_MM = 44.0;
+// Maximum visible radius (adjustable if needed to account for bezel)
+const int MAX_RADIUS = 120;
 
-// Calculate maxR as the visible radius in pixels
-// The display is 240x240, so radius is 120 pixels
-// We scale to the visible area accounting for bezel
-const int MAX_RADIUS = 120;  // Full display radius
-const int INNER_RADIUS = (int)(MAX_RADIUS * (VISIBLE_DIAMETER_MM / CYLINDER_OD_MM));  // ~94 pixels
-
-// Hand parameters (from simulation)
-// Normal hands: 92% of inner radius
+// Hand parameters
+// Normal hands: 92% of max radius
 // Thin hand (3rd hand): 80% thickness of normal
-const float HAND_LENGTH_NORMAL = INNER_RADIUS * 0.92;
+const float HAND_LENGTH_NORMAL = MAX_RADIUS * 0.92;
 const float HAND_THICKNESS_NORMAL = 3.0;
 const float HAND_THICKNESS_THIN = 2.4;  // 80% of normal
 
@@ -101,8 +89,8 @@ void setup() {
   delay(200);
 
   Serial.println("Twenty-Four Times - Clock Hands Proof of Concept");
-  Serial.print("Inner radius: ");
-  Serial.print(INNER_RADIUS);
+  Serial.print("Max radius: ");
+  Serial.print(MAX_RADIUS);
   Serial.println(" pixels");
   Serial.print("Hand length: ");
   Serial.print(HAND_LENGTH_NORMAL);
@@ -120,11 +108,8 @@ void loop() {
   // Clear canvas
   canvas.fillScreen(GC9A01A_BLACK);
 
-  // Optional: Draw reference circles to show the safe area
-  // Outer circle (display edge)
+  // Optional: Draw reference circle to show the max radius
   canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(0, 0, 64));
-  // Inner safe circle (visible area)
-  canvas.drawCircle(CENTER_X, CENTER_Y, INNER_RADIUS, tft.color565(0, 64, 128));
 
   // Draw the three clock hands
   // Hand color: dark gray/black (#111 from simulation)
