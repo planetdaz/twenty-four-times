@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Virtual Pixel Matrix – Scale Layout</title>
+  <style>
+    body {
+      background: #f5f5f5;
+      font-family: sans-serif;
+    }
+    svg {
+      background: white;
+      border: 1px solid #ccc;
+      width: 100vw;
+      height: auto;
+      display: block;
+      max-width: 100%;
+    }
+    .pixel {
+      stroke: #4da3ff;
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .safe {
+      stroke: #cce6ff;
+      stroke-width: 1;
+      stroke-dasharray: 4 4;
+      fill: none;
+    }
+    .hand {
+      stroke: #111;
+      stroke-width: 3;
+      stroke-linecap: round;
+    }
+    .hand-thin {
+      stroke-width: 2.4; /* 80% of 3 */
+      stroke: #111;
+    }
+    .hand-placeholder {
+      stroke: #ccc;
+      stroke-width: 2;
+    }
+    .outline {
+      stroke: #000;
+      stroke-width: 2;
+      fill: none;
+    }
+    .control-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 10px 0;
+    }
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    button {
+      padding: 6px 12px;
+      font-size: 14px;
+      cursor: pointer;
+      border: 1px solid #999;
+      background: #fff;
+      border-radius: 4px;
+    }
+    button:hover {
+      background: #f0f0f0;
+    }
+    button:active {
+      background: #e0e0e0;
+    }
+    #timeInput {
+      font-family: monospace;
+      font-size: 16px;
+      padding: 6px 8px;
+      width: 80px;
+      text-align: center;
+      border: 1px solid #999;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+<div style="padding: 10px;">
+  <!-- Time Controls -->
+  <div class="control-row">
+    <button id="prevTimeBtn" title="Previous time (Left Arrow)">◀</button>
+    <input type="text" id="timeInput" maxlength="5" placeholder="12:30" />
+    <button id="nextTimeBtn" title="Next time (Right Arrow)">▶</button>
+    <button id="randomTimeBtn" title="Random time (Spacebar)">🎲 Random</button>
+    <label style="margin-left: 8px;">
+      <input type="checkbox" id="timerCheckbox" checked> Auto-advance (5s)
+    </label>
+  </div>
+
+  <!-- Ripple Controls -->
+  <div class="control-row">
+    <div class="control-group">
+      <select id="rippleSelect">
+        <option value="none">No Ripple</option>
+        <option value="left-right">Left to Right</option>
+        <option value="right-left">Right to Left</option>
+        <option value="top-bottom">Top to Bottom</option>
+        <option value="bottom-top">Bottom to Top</option>
+        <option value="center-out">Center Out</option>
+        <option value="edges-in">Edges In</option>
+        <option value="random">Random</option>
+      </select>
+      <span id="rippleLabel">Ripple direction</span>
+    </div>
+    <div class="control-group">
+      <select id="rippleSpeedSelect">
+        <option value="0.2">Very Fast</option>
+        <option value="0.4">Fast</option>
+        <option value="0.6">Normal</option>
+        <option value="0.8">Slow</option>
+        <option value="1.0">Very Slow</option>
+      </select>
+      <span id="rippleSpeedLabel">Ripple spread</span>
+    </div>
+  </div>
+
+  <!-- Animation Controls -->
+  <div class="control-row">
+    <div class="control-group">
+      <select id="easingSelect">
+        <option value="elastic">Elastic</option>
+        <option value="linear">Linear</option>
+        <option value="ease-in-out">Ease-in-out</option>
+        <option value="bounce">Bounce</option>
+        <option value="back-in">Back (at start)</option>
+        <option value="back-out">Back (at end)</option>
+        <option value="back-in-out">Back (in & out)</option>
+        <option value="random">Random</option>
+      </select>
+      <span>Animation easing</span>
+    </div>
+    <div class="control-group">
+      <select id="durationSelect">
+        <option value="600">0.6 seconds (Fastest)</option>
+        <option value="1000">1 second (Faster)</option>
+        <option value="1600">1.6 seconds (Fast)</option>
+        <option value="2400">2.4 seconds (Normal)</option>
+        <option value="3500">3.5 seconds (Slow)</option>
+        <option value="5000">5 seconds (Slower)</option>
+        <option value="8000">8 seconds (Slowest)</option>
+      </select>
+      <span>Animation duration</span>
+    </div>
+  </div>
+
+  <!-- Notification -->
+  <div id="randomNotification" style="display:none; background:#ffe; padding:8px 12px; margin:10px 0; border-radius:4px; border:1px solid #cc9; font-size:14px;">
+  </div>
+</div>
+<svg id="svg"></svg>
+
+<script>
+/* ---- Physical parameters (mm) ---- */
+const cols = 8;
+const rows = 3;
+const cylinderOD = 44.0; // outer diameter
+const visibleDiameter = 34.6; // inner visible diameter
+const cylinderGap = 2.75; // gap between outside circles
+
+/* ---- Derived geometry ---- */
+const outerRadius = cylinderOD / 2;
+const innerRadius = visibleDiameter / 2;
+const spacing = 46.75; // center-to-center distance in mm
+
+/* ---- SVG sizing ---- */
+
+const outlineGap = cylinderGap * 3; // triple gap for outline
+const margin = cylinderGap; // gap between outline and edge circles
+const width = spacing * (cols - 1) + cylinderOD + margin * 2 + outlineGap * 2;
+const height = spacing * (rows - 1) + cylinderOD + margin * 2 + outlineGap * 2;
+
+const svg = document.getElementById("svg");
+svg.style.width = "100vw";
+svg.style.height = "auto";
+svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+/* ---- Helpers ---- */
+function circle(cx, cy, r, cls) {
+  return `<circle cx="${cx}" cy="${cy}" r="${r}" class="${cls}" />`;
+}
+
+function hand(cx, cy, angleDeg, length, cls="hand") {
+  const rad = (angleDeg - 90) * Math.PI / 180;
+  const x2 = cx + Math.cos(rad) * length;
+  const y2 = cy + Math.sin(rad) * length;
+  return `<line x1="${cx}" y1="${cy}" x2="${x2}" y2="${y2}" class="${cls}" />`;
+}
+
+
+// ---- Digit hand definitions ----
+// Each digit is defined as a grid of rows and columns:
+// - Most digits use a 3x2 grid: [ [row0col0, row0col1], [row1col0, row1col1], [row2col0, row2col1] ]
+// - ':' and '1' use a 3x1 grid: [ [row0], [row1], [row2] ]
+// Each cell is an array: [angle1, angle2, angle3, style?]
+//   - angle1, angle2, angle3: degrees for the 3 hands in that pixel (always present)
+//   - style (optional): 1 = normal hands, 2 = short/light gray hands
+// Angles: 0=up, 90=right, 180=down, 225=empty, 270=left
+const DIGITS = {
+  // ':' is a single column, dots in top and bottom row
+  ":": [
+    [[180, 180, 180]],
+    [[225, 225, 225, 2]],
+    [[0, 0, 0]]
+  ],
+  // ' ' (space) is a single column, all 225° hands, style 2
+  " ": [
+    [[225, 225, 225, 2]],
+    [[225, 225, 225, 2]],
+    [[225, 225, 225, 2]]
+  ],
+  "0": [
+    [[90, 180, 180], [180, 270, 270]],
+    [[0, 180, 180], [0, 180, 180]],
+    [[0, 90, 90], [0, 270, 270]]
+  ],
+  "1": [
+    [[180, 180, 180]],
+    [[0, 180, 180]],
+    [[0, 0, 0]]
+  ],
+  "2": [
+    [[90, 90, 90], [270, 180, 270]],
+    [[90, 180, 180], [0, 270, 0]],
+    [[0, 90, 90], [270, 270, 270]]
+  ],
+  "3": [
+    [[90, 90, 90], [270, 180, 270]],
+    [[90, 90, 90], [0, 180, 270]],
+    [[90, 90, 90], [0, 270, 0]]
+  ],
+  "4": [
+    [[180, 180, 180], [180, 180, 180]],
+    [[0, 90, 90], [0, 180, 270]],
+    [[225, 225, 225, 2], [0, 0, 0]]
+  ],
+  "5": [
+    [[90, 180, 180], [270, 270, 270]],
+    [[0, 90, 90], [270, 180, 270]],
+    [[0, 90, 90], [0, 270, 0]]
+  ],
+  "6": [
+    [[180, 90, 90], [270, 180, 270]],
+    [[0, 90, 180], [270, 180, 270]],
+    [[0, 90, 90], [0, 270, 0]]
+  ],
+  "7": [
+    [[90, 180, 180], [180, 270, 270]],
+    [[225, 225, 225, 2], [0, 180, 180]],
+    [[225, 225, 225, 2], [0, 0, 0]]
+  ],
+  "8": [
+    [[90, 180, 180], [180, 270, 270]],
+    [[0, 90, 180], [0, 180, 270]],
+    [[0, 90, 90], [0, 270, 0]]
+  ],
+  "9": [
+    [[90, 180, 180], [180, 270, 270]],
+    [[0, 90, 90], [0, 180, 270]],
+    [[0, 90, 90], [0, 270, 0]]
+  ]
+};
+
+// --- Animation and drawing logic ---
+// Globals for random mode
+let randomEasing = 'elastic';
+let randomTiming = 1.0;
+let randomRippleMode = 'none';
+
+let timeDigits = ["1", "2", ":", "3", "0"];
+let prevGrid = null;
+let animationFrameId = null;
+let currentHour = 12;
+let currentMinute = 30;
+
+
+function randomTimeDigits() {
+  // Generate random hour (1-12) and minute (00-59) for 12-hour clock
+  const hour = Math.floor(Math.random() * 12) + 1;
+  const minute = Math.floor(Math.random() * 60);
+  return formatTimeDigits(hour, minute);
+}
+
+
+
+function sequentialTimeDigits(delta = 1) {
+  // Change time by delta minutes (default +1)
+  let totalMinutes = (currentHour - 1) * 60 + currentMinute + delta;
+  if (totalMinutes < 0) totalMinutes += 12 * 60;
+  totalMinutes = totalMinutes % (12 * 60);
+  currentHour = Math.floor(totalMinutes / 60) + 1;
+  currentMinute = totalMinutes % 60;
+  return formatTimeDigits(currentHour, currentMinute);
+}
+
+function formatTimeDigits(hour, minute) {
+  // Remove leading zero for single-digit hour
+  const hourStr = String(hour);
+  const minStr = String(minute).padStart(2, '0');
+  let digits = [];
+  if (hourStr.length === 1) {
+    digits.push(hourStr);
+  } else {
+    digits.push(hourStr[0], hourStr[1]);
+  }
+  digits.push(':', minStr[0], minStr[1]);
+  return digits;
+}
+
+function parseTimeDigits(digits) {
+  // Parse timeDigits array back to hour and minute
+  // Handles both 4-char (1:32) and 5-char (12:30) formats
+  const timeStr = digits.join('');
+  const parts = timeStr.split(':');
+  if (parts.length === 2) {
+    const hour = parseInt(parts[0].trim() || '12', 10);
+    const minute = parseInt(parts[1], 10);
+    return { hour, minute };
+  }
+  return { hour: currentHour, minute: currentMinute };
+}
+
+function drawMatrix() {
+  // --- Animation-aware rendering ---
+  // Build prevGrid and nextGrid for animation
+  let digitColWidths = timeDigits.map(d => (d === '1' || d === ':') ? 1 : 2);
+  let renderedCols = digitColWidths.reduce((a, b) => a + b, 0);
+  let totalCols = Math.max(renderedCols, 8);
+  let emptyCols = totalCols - renderedCols;
+  let leftPad = 0;
+  if (emptyCols === 1) {
+    leftPad = 1;
+  } else if (emptyCols > 1) {
+    leftPad = Math.ceil(emptyCols / 2);
+  }
+  // Calculate dynamicWidth and dynamicHeight for animation
+  const dynamicWidth = spacing * (totalCols - 1) + cylinderOD + margin * 2 + outlineGap * 2;
+  const dynamicHeight = spacing * (rows - 1) + cylinderOD + margin * 2 + outlineGap * 2;
+  svg.setAttribute("viewBox", `0 0 ${dynamicWidth} ${dynamicHeight}`);
+
+  // Build nextGrid: [col][row] = [angle1, angle2, angle3, style]
+  let nextGrid = [];
+  let colCursor = 0;
+  // Left pad
+  for (; colCursor < leftPad; colCursor++) {
+    for (let r = 0; r < rows; r++) {
+      nextGrid.push([colCursor, r, DIGITS[" "][r][0]]);
+    }
+  }
+  // Digits
+  for (let digitIndex = 0; digitIndex < timeDigits.length; digitIndex++) {
+    const digit = timeDigits[digitIndex];
+    const grid = DIGITS[digit];
+    const digitCols = (digit === '1' || digit === ':') ? 1 : 2;
+    for (let dc = 0; dc < digitCols; dc++) {
+      for (let r = 0; r < rows; r++) {
+        nextGrid.push([colCursor + dc, r, grid[r][dc]]);
+      }
+    }
+    colCursor += digitCols;
+  }
+  // Right pad
+  for (; colCursor < totalCols; colCursor++) {
+    for (let r = 0; r < rows; r++) {
+      nextGrid.push([colCursor, r, DIGITS[" "][r][0]]);
+    }
+  }
+  // Animate hands from prevGrid to nextGrid
+  // Get user-selected duration
+  const durationSelect = document.getElementById('durationSelect');
+  const easingSelect = document.getElementById('easingSelect');
+  const savedDuration = localStorage.getItem('pixelMatrixDuration');
+  let totalDuration = 1600;
+  let randomDuration = null;
+
+  // Check if easing is random - if so, randomize duration too
+  const selectedEasingMode = easingSelect ? easingSelect.value : 'elastic';
+  if (selectedEasingMode === 'random') {
+    const durationValues = [600, 1000, 1600, 2400, 3500, 5000, 8000];
+    randomDuration = durationValues[Math.floor(Math.random() * durationValues.length)];
+    totalDuration = randomDuration;
+  } else if (savedDuration) {
+    totalDuration = parseInt(savedDuration, 10);
+  } else if (durationSelect && durationSelect.value) {
+    totalDuration = parseInt(durationSelect.value, 10);
+  }
+  const start = performance.now();
+
+  // Update ripple speed dropdown options with actual durations
+  const rippleSpeedSelect = document.getElementById('rippleSpeedSelect');
+  const currentRippleSpeed = rippleSpeedSelect.value;
+  rippleSpeedSelect.innerHTML = `
+    <option value="0.2">Very Fast (${(totalDuration * 0.2 / 1000).toFixed(1)}s)</option>
+    <option value="0.4">Fast (${(totalDuration * 0.4 / 1000).toFixed(1)}s)</option>
+    <option value="0.6">Normal (${(totalDuration * 0.6 / 1000).toFixed(1)}s)</option>
+    <option value="0.8">Slow (${(totalDuration * 0.8 / 1000).toFixed(1)}s)</option>
+    <option value="1.0">Very Slow (${(totalDuration * 1.0 / 1000).toFixed(1)}s)</option>
+  `;
+  rippleSpeedSelect.value = currentRippleSpeed;
+
+  // Ripple logic
+  const rippleSelect = document.getElementById('rippleSelect');
+  const savedRipple = localStorage.getItem('pixelMatrixRippleMode');
+  let rippleMode = 'none';
+  if (savedRipple) {
+    rippleMode = savedRipple;
+    rippleSelect.value = savedRipple;
+  } else if (rippleSelect && rippleSelect.value) {
+    rippleMode = rippleSelect.value;
+  }
+
+  // Handle random ripple mode
+  let randomRippleSpeed = null;
+  if (rippleMode === 'random') {
+    const rippleModes = ['left-right', 'right-left', 'top-bottom', 'bottom-top', 'center-out', 'edges-in'];
+    randomRippleMode = rippleModes[Math.floor(Math.random() * rippleModes.length)];
+    rippleMode = randomRippleMode;
+    // Also randomize ripple speed when ripple mode is random (pick from discrete values)
+    const rippleSpeeds = [0.2, 0.4, 0.6, 0.8, 1.0];
+    randomRippleSpeed = rippleSpeeds[Math.floor(Math.random() * rippleSpeeds.length)];
+  }
+  // Compute per-pixel ripple delay
+  let delays = [];
+  // Ripple speed
+  const savedRippleSpeed = localStorage.getItem('pixelMatrixRippleSpeed');
+  let rippleSpeed = 0.6;
+  if (randomRippleSpeed !== null) {
+    // Use random ripple speed if ripple mode is random
+    rippleSpeed = randomRippleSpeed;
+  } else if (savedRippleSpeed) {
+    rippleSpeed = parseFloat(savedRippleSpeed);
+    rippleSpeedSelect.value = savedRippleSpeed;
+  } else if (rippleSpeedSelect && rippleSpeedSelect.value) {
+    rippleSpeed = parseFloat(rippleSpeedSelect.value);
+  }
+  if (rippleMode !== 'none') {
+    // Get grid positions for each pixel
+    let positions = nextGrid.map(([col, row]) => ({col, row}));
+    let maxDelay = totalDuration * rippleSpeed; // user controls spread
+    let getDelay = (i) => 0;
+    if (rippleMode === 'left-right') {
+      let maxCol = Math.max(...positions.map(p => p.col));
+      getDelay = (i) => (positions[i].col / maxCol) * maxDelay;
+    } else if (rippleMode === 'right-left') {
+      let maxCol = Math.max(...positions.map(p => p.col));
+      getDelay = (i) => ((maxCol - positions[i].col) / maxCol) * maxDelay;
+    } else if (rippleMode === 'top-bottom') {
+      let maxRow = Math.max(...positions.map(p => p.row));
+      getDelay = (i) => (positions[i].row / maxRow) * maxDelay;
+    } else if (rippleMode === 'bottom-top') {
+      let maxRow = Math.max(...positions.map(p => p.row));
+      getDelay = (i) => ((maxRow - positions[i].row) / maxRow) * maxDelay;
+    } else if (rippleMode === 'center-out') {
+      let maxCol = Math.max(...positions.map(p => p.col));
+      let maxRow = Math.max(...positions.map(p => p.row));
+      let centerCol = maxCol / 2, centerRow = maxRow / 2;
+      let maxDist = Math.sqrt(centerCol*centerCol + centerRow*centerRow);
+      getDelay = (i) => {
+        let dx = positions[i].col - centerCol;
+        let dy = positions[i].row - centerRow;
+        return (Math.sqrt(dx*dx + dy*dy) / maxDist) * maxDelay;
+      };
+    } else if (rippleMode === 'edges-in') {
+      let maxCol = Math.max(...positions.map(p => p.col));
+      let maxRow = Math.max(...positions.map(p => p.row));
+      let centerCol = maxCol / 2, centerRow = maxRow / 2;
+      let maxDist = Math.sqrt(centerCol*centerCol + centerRow*centerRow);
+      getDelay = (i) => {
+        let dx = positions[i].col - centerCol;
+        let dy = positions[i].row - centerRow;
+        return (1 - Math.sqrt(dx*dx + dy*dy) / maxDist) * maxDelay;
+      };
+    }
+    for (let i = 0; i < nextGrid.length; i++) {
+      delays[i] = getDelay(i);
+    }
+  } else {
+    for (let i = 0; i < nextGrid.length; i++) delays[i] = 0;
+  }
+  // For each hand, randomize a duration (0.7-1.0x totalDuration), but apply ripple delay to the start time, not the duration
+  let handDurations = [];
+  let handDelays = [];
+  // Pick one random easing for the entire animation phase
+  const easingModes = ['elastic', 'linear', 'ease-in-out', 'bounce', 'back-in', 'back-out', 'back-in-out'];
+
+  if (selectedEasingMode === 'random') {
+    randomEasing = easingModes[Math.floor(Math.random() * easingModes.length)];
+    // Pick from discrete timing values for better distribution
+    const timingValues = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3];
+    randomTiming = timingValues[Math.floor(Math.random() * timingValues.length)];
+  }
+
+  // Display notification for all animations
+  const notificationDiv = document.getElementById('randomNotification');
+  const rippleSelectValue = document.getElementById('rippleSelect').value;
+  let messages = [];
+
+  const durationMs = totalDuration;
+  const durationSec = (durationMs / 1000).toFixed(1);
+
+  // Ripple information first (to match UI order)
+  if (rippleSelectValue !== 'none') {
+    const rippleNames = {
+      'left-right': 'Left to Right',
+      'right-left': 'Right to Left',
+      'top-bottom': 'Top to Bottom',
+      'bottom-top': 'Bottom to Top',
+      'center-out': 'Center Out',
+      'edges-in': 'Edges In'
+    };
+    const displayRipple = rippleSelectValue === 'random' ? randomRippleMode : rippleSelectValue;
+    const rippleLabel = rippleNames[displayRipple] || displayRipple;
+
+    // Get ripple speed name and duration
+    const rippleSpeedNames = {
+      0.2: 'Very Fast',
+      0.4: 'Fast',
+      0.6: 'Normal',
+      0.8: 'Slow',
+      1.0: 'Very Slow'
+    };
+    const rippleSpeedName = rippleSpeedNames[rippleSpeed] || rippleSpeed.toFixed(1);
+    const rippleSpreadSec = (durationMs * rippleSpeed / 1000).toFixed(1);
+
+    const ripplePrefix = rippleSelectValue === 'random' ? '<b>Ripple (random):</b>' : '<b>Ripple:</b>';
+    messages.push(`${ripplePrefix} ${rippleLabel}, ${rippleSpeedName} (${rippleSpreadSec}s)`);
+  }
+
+  // Easing information (combined with duration and timing)
+  const easingNames = {
+    'elastic': 'Elastic',
+    'linear': 'Linear',
+    'ease-in-out': 'Ease-in-out',
+    'bounce': 'Bounce',
+    'back-in': 'Back (at start)',
+    'back-out': 'Back (at end)',
+    'back-in-out': 'Back (in & out)'
+  };
+  const displayEasing = selectedEasingMode === 'random' ? randomEasing : selectedEasingMode;
+  const easingLabel = easingNames[displayEasing] || displayEasing;
+
+  // Combine easing type, duration, and timing multiplier
+  const easingPrefix = selectedEasingMode === 'random' ? '<b>Easing (random):</b>' : '<b>Easing:</b>';
+  let easingInfo = `${easingPrefix} ${easingLabel}, ${durationSec}s`;
+  if (selectedEasingMode === 'random') {
+    easingInfo += `, ${randomTiming.toFixed(2)}x`;
+  }
+  messages.push(easingInfo);
+
+  notificationDiv.innerHTML = messages.join(' &nbsp;|&nbsp; ');
+  notificationDiv.style.display = 'block';
+
+  for (let i = 0; i < nextGrid.length; i++) {
+    handDurations[i] = [
+      totalDuration * (0.7 + Math.random() * 0.3),
+      totalDuration * (0.7 + Math.random() * 0.3),
+      totalDuration * (0.7 + Math.random() * 0.3)
+    ];
+    handDelays[i] = [delays[i], delays[i], delays[i]];
+  }
+  // Store random direction for each hand transition
+  let angleDirections = [];
+  let sweep360Arr = [];
+  if (!prevGrid) prevGrid = nextGrid.map(cell => [...cell]);
+  for (let i = 0; i < nextGrid.length; i++) {
+    angleDirections[i] = [
+      Math.random() < 0.5 ? 1 : -1,
+      Math.random() < 0.5 ? 1 : -1,
+      Math.random() < 0.5 ? 1 : -1
+    ];
+    // If the digit/cell is unchanged, set a flag for 360 sweep
+    const prevCell = prevGrid && prevGrid[i] ? prevGrid[i][2] : null;
+    const nextCell = nextGrid[i][2];
+    sweep360Arr[i] = (prevCell && nextCell && prevCell.join() === nextCell.join());
+  }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function lerpAngle(a, b, t) {
+    // This function will be overridden in renderFrame to use random direction
+    let diff = ((b - a + 540) % 360) - 180;
+    return (a + diff * t + 360) % 360;
+  }
+  function lerpColor(c1, c2, t) {
+    // c1, c2: [r,g,b]
+    return `rgb(${Math.round(lerp(c1[0],c2[0],t))},${Math.round(lerp(c1[1],c2[1],t))},${Math.round(lerp(c1[2],c2[2],t))})`;
+  }
+
+  // Easing functions
+  function elasticEaseOut(t) {
+    if (t === 0 || t === 1) return t;
+    const c4 = (2 * Math.PI) / 3;
+    return Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
+  }
+  function linearEase(t) {
+    return t;
+  }
+  function easeIn(t) {
+    return t * t;
+  }
+  function easeOut(t) {
+    return t * (2 - t);
+  }
+  function easeInOut(t) {
+    // Smoothstep (S-curve)
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  }
+  function bounceEaseOut(t) {
+    // Robert Penner's bounce ease out
+    if (t < (1 / 2.75)) {
+      return 7.5625 * t * t;
+    } else if (t < (2 / 2.75)) {
+      t -= (1.5 / 2.75);
+      return 7.5625 * t * t + 0.75;
+    } else if (t < (2.5 / 2.75)) {
+      t -= (2.25 / 2.75);
+      return 7.5625 * t * t + 0.9375;
+    } else {
+      t -= (2.625 / 2.75);
+      return 7.5625 * t * t + 0.984375;
+    }
+  }
+  function backEaseIn(t) {
+    // Robert Penner's back ease in
+    const c1 = 1.70158;
+    const c3 = c1 + 1;
+    return c3 * t * t * t - c1 * t * t;
+  }
+  function backEaseOut(t) {
+    // Robert Penner's back ease out
+    const c1 = 1.70158;
+    const c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  }
+  function backEaseInOut(t) {
+    // Robert Penner's back ease in-out
+    const c1 = 1.70158 * 1.525;
+    return t < 0.5
+      ? (Math.pow(2 * t, 2) * ((c1 + 1) * 2 * t - c1)) / 2
+      : (Math.pow(2 * t - 2, 2) * ((c1 + 1) * (t * 2 - 2) + c1) + 2) / 2;
+  }
+  // Color definitions
+  const color1 = [17,17,17]; // #111
+  const color2 = [204,204,204]; // #ccc
+  // Render function
+  function renderFrame(now) {
+    // Duration select logic
+    const durationSelect = document.getElementById('durationSelect');
+    const savedDuration = localStorage.getItem('pixelMatrixDuration');
+    if (savedDuration) {
+      durationSelect.value = savedDuration;
+    }
+    window.durationSelect = durationSelect;
+    durationSelect.addEventListener('change', () => {
+      localStorage.setItem('pixelMatrixDuration', durationSelect.value);
+      if (animationFrameId) {
+        if (typeof drawMatrix === 'function') drawMatrix();
+      }
+    });
+
+    // We'll use the max duration for the overall animation, but each hand will finish at its own time
+    // Find the maximum (delay + duration) for any hand, so animation doesn't end early
+    let maxHandEnd = 0;
+    const mode = (window.easingSelect && window.easingSelect.value) || 'elastic';
+    for (let i = 0; i < handDurations.length; i++) {
+      for (let j = 0; j < 3; j++) {
+        let duration = handDurations[i][j];
+        // Account for randomTiming multiplier in random mode
+        if (mode === 'random') {
+          duration *= randomTiming;
+        }
+        let end = (handDelays && handDelays[i] ? handDelays[i][j] : 0) + duration;
+        if (end > maxHandEnd) maxHandEnd = end;
+      }
+    }
+    let t = Math.min((now - start) / maxHandEnd, 1);
+    // Easing mode select logic
+    const easingSelect = document.getElementById('easingSelect');
+    const savedEasingMode = localStorage.getItem('pixelMatrixEasingMode');
+    if (savedEasingMode) {
+      easingSelect.value = savedEasingMode;
+    }
+    window.easingSelect = easingSelect;
+    easingSelect.addEventListener('change', () => {
+      localStorage.setItem('pixelMatrixEasingMode', easingSelect.value);
+      if (animationFrameId) {
+        if (typeof drawMatrix === 'function') drawMatrix();
+      }
+    });
+    let svgContent = "";
+    svgContent += `
+      <rect
+        x="${margin - outlineGap}"
+        y="${margin - outlineGap}"
+        width="${dynamicWidth - (margin - outlineGap) * 2}"
+        height="${dynamicHeight - (margin - outlineGap) * 2}"
+        class="outline"
+      />
+    `;
+    for (let i = 0; i < nextGrid.length; i++) {
+      const [col, row, nextCell] = nextGrid[i];
+      let prevCell = prevGrid && prevGrid[i] ? prevGrid[i][2] : nextCell;
+      const cx = margin + outerRadius + col * spacing + outlineGap;
+      const cy = margin + outerRadius + row * spacing + outlineGap;
+      svgContent += circle(cx, cy, outerRadius, "pixel");
+      svgContent += circle(cx, cy, innerRadius, "safe");
+      // Animate each hand
+      for (let idx = 0; idx < 3; idx++) {
+        const prevAngle = prevCell[idx];
+        const nextAngle = nextCell[idx];
+        const prevStyle = prevCell[3] || 1;
+        const nextStyle = nextCell[3] || 1;
+        // Per-hand progress and easing, with ripple delay
+        let delay = handDelays[i][idx] || 0;
+        let duration = handDurations[i][idx];
+        let elapsed = now - start - delay;
+        let handT = Math.max(0, Math.min(elapsed / duration, 1));
+        let styleT;
+        let mode = (window.easingSelect && window.easingSelect.value) || 'elastic';
+        if (mode === 'random') {
+          // Use the same random easing for all hands in this animation phase
+          handT = Math.max(0, Math.min(elapsed / (duration * randomTiming), 1));
+          if (randomEasing === 'elastic') styleT = elasticEaseOut(handT);
+          else if (randomEasing === 'linear') styleT = linearEase(handT);
+          else if (randomEasing === 'ease-in-out') styleT = easeInOut(handT);
+          else if (randomEasing === 'bounce') styleT = bounceEaseOut(handT);
+          else if (randomEasing === 'back-in') styleT = backEaseIn(handT);
+          else if (randomEasing === 'back-out') styleT = backEaseOut(handT);
+          else if (randomEasing === 'back-in-out') styleT = backEaseInOut(handT);
+          else styleT = handT;
+        } else {
+          if (mode === 'elastic') styleT = elasticEaseOut(handT);
+          else if (mode === 'linear') styleT = linearEase(handT);
+          else if (mode === 'ease-in-out') styleT = easeInOut(handT);
+          else if (mode === 'bounce') styleT = bounceEaseOut(handT);
+          else if (mode === 'back-in') styleT = backEaseIn(handT);
+          else if (mode === 'back-out') styleT = backEaseOut(handT);
+          else if (mode === 'back-in-out') styleT = backEaseInOut(handT);
+          else styleT = handT;
+        }
+        let direction = angleDirections[i][idx];
+        let angle;
+        if (sweep360Arr[i]) {
+          // Always sweep a full circle in the random direction
+          angle = (prevAngle + 360 * direction * styleT + 360) % 360;
+        } else {
+          // Normal shortest-path tween
+          let diff = ((nextAngle - prevAngle + 540) % 360) - 180;
+          if (direction === 1) {
+            angle = (prevAngle + diff * styleT + 360) % 360;
+          } else {
+            angle = (prevAngle - (360 - Math.abs(diff)) * styleT * Math.sign(diff) + 360) % 360;
+          }
+        }
+        // Style interpolation
+        const style = styleT < 1 ? prevStyle : nextStyle;
+        // Length tween
+        const prevLength = prevStyle === 2 ? innerRadius * 0.65 : innerRadius * 0.92;
+        const nextLength = nextStyle === 2 ? innerRadius * 0.65 : innerRadius * 0.92;
+        const length = lerp(prevLength, nextLength, styleT);
+        // Color tween
+        const prevColorArr = prevStyle === 2 ? color2 : color1;
+        const nextColorArr = nextStyle === 2 ? color2 : color1;
+        const color = lerpColor(prevColorArr, nextColorArr, styleT);
+        let cls = "hand";
+        if (styleT < 1) {
+          cls = prevStyle === 2 ? "hand-placeholder" : (idx === 2 ? "hand hand-thin" : "hand");
+        } else {
+          cls = nextStyle === 2 ? "hand-placeholder" : (idx === 2 ? "hand hand-thin" : "hand");
+        }
+        // Line thickness tween
+        const prevThickness = prevStyle === 2 ? 2 : (idx === 2 ? 2.4 : 3);
+        const nextThickness = nextStyle === 2 ? 2 : (idx === 2 ? 2.4 : 3);
+        const thickness = lerp(prevThickness, nextThickness, styleT);
+        // Tween or unify line ending style
+        const linecap = 'round';
+        svgContent += `<line x1="${cx}" y1="${cy}" x2="${cx + Math.cos((angle-90)*Math.PI/180)*length}" y2="${cy + Math.sin((angle-90)*Math.PI/180)*length}" style="stroke:${color};stroke-width:${thickness};stroke-linecap:${linecap}" class="${cls}" />`;
+      }
+    }
+    svg.innerHTML = svgContent;
+    if (t < 1) {
+      animationFrameId = requestAnimationFrame(renderFrame);
+    } else {
+      animationFrameId = null;
+      prevGrid = nextGrid;
+      // Start timer only after animation completes (with 5s delay)
+      if (timerCheckbox && timerCheckbox.checked && !timer) {
+        // Wait 5 seconds before starting the timer
+        setTimeout(() => {
+          if (timerCheckbox.checked && !timer) {
+            startTimer();
+          }
+        }, 5000);
+      }
+    }
+  }
+  if (animationFrameId) cancelAnimationFrame(animationFrameId);
+  animationFrameId = requestAnimationFrame(renderFrame);
+}
+
+// Restore duration select state from localStorage
+const durationSelect = document.getElementById('durationSelect');
+const savedDuration = localStorage.getItem('pixelMatrixDuration');
+if (savedDuration) {
+  durationSelect.value = savedDuration;
+}
+durationSelect.addEventListener('change', () => {
+  localStorage.setItem('pixelMatrixDuration', durationSelect.value);
+});
+
+// Get UI elements before using them
+let timer = null;
+const timerCheckbox = document.getElementById('timerCheckbox');
+const timeInput = document.getElementById('timeInput');
+
+// Restore timer checkbox state from localStorage
+const savedTimer = localStorage.getItem('pixelMatrixTimerEnabled');
+if (savedTimer !== null) {
+  timerCheckbox.checked = savedTimer === 'true';
+}
+
+function startTimer() {
+  if (!timer) timer = setInterval(() => {
+    // Only advance if no animation is running
+    if (!animationFrameId) nextTime();
+  }, 5000);
+}
+function stopTimer() {
+  if (timer) { clearInterval(timer); timer = null; }
+}
+
+// Time input handling functions
+function updateTimeInput() {
+  const timeStr = timeDigits.join('');
+  timeInput.value = timeStr;
+}
+
+// Initial draw
+drawMatrix();
+updateTimeInput();
+
+function nextTime(delta = 1) {
+  timeDigits = sequentialTimeDigits(delta);
+  drawMatrix();
+  updateTimeInput();
+}
+
+function randomizeTime() {
+  // Set to a new random time
+  const hour = currentHour = Math.floor(Math.random() * 12) + 1;
+  const minute = currentMinute = Math.floor(Math.random() * 60);
+  timeDigits = formatTimeDigits(hour, minute);
+  drawMatrix();
+  updateTimeInput();
+}
+
+// Ripple control event listeners
+const rippleSelect = document.getElementById('rippleSelect');
+const rippleSpeedSelect = document.getElementById('rippleSpeedSelect');
+
+rippleSelect.addEventListener('change', () => {
+  localStorage.setItem('pixelMatrixRippleMode', rippleSelect.value);
+  if (animationFrameId) {
+    if (typeof drawMatrix === 'function') drawMatrix();
+  }
+});
+
+rippleSpeedSelect.addEventListener('change', () => {
+  localStorage.setItem('pixelMatrixRippleSpeed', rippleSpeedSelect.value);
+  if (animationFrameId) {
+    if (typeof drawMatrix === 'function') drawMatrix();
+  }
+});
+
+// Timer will start automatically after the initial animation completes (handled in renderFrame)
+
+
+
+document.addEventListener('keydown', (e) => {
+  // Don't handle keyboard shortcuts if typing in the time input
+  if (e.target.id === 'timeInput') return;
+
+  if (e.code === 'ArrowLeft') {
+    stopTimer();
+    nextTime(-1);
+    if (timerCheckbox.checked) startTimer();
+    e.preventDefault();
+    return;
+  } else if (e.code === 'ArrowRight') {
+    stopTimer();
+    nextTime(1);
+    if (timerCheckbox.checked) startTimer();
+    e.preventDefault();
+    return;
+  } else if (e.code === 'Space') {
+    stopTimer();
+    randomizeTime();
+    if (timerCheckbox.checked) startTimer();
+    e.preventDefault();
+  }
+});
+
+// Button event handlers
+document.getElementById('prevTimeBtn').addEventListener('click', () => {
+  stopTimer();
+  nextTime(-1);
+  if (timerCheckbox.checked) startTimer();
+});
+
+document.getElementById('nextTimeBtn').addEventListener('click', () => {
+  stopTimer();
+  nextTime(1);
+  if (timerCheckbox.checked) startTimer();
+});
+
+document.getElementById('randomTimeBtn').addEventListener('click', () => {
+  stopTimer();
+  randomizeTime();
+  if (timerCheckbox.checked) startTimer();
+});
+
+// Validate and filter input
+timeInput.addEventListener('input', (e) => {
+  let value = e.target.value.toUpperCase();
+  // Only allow valid characters: 0-9, :, and space
+  value = value.replace(/[^0-9: ]/g, '');
+  e.target.value = value;
+});
+
+// Handle Enter key to apply time
+timeInput.addEventListener('keydown', (e) => {
+  if (e.code === 'Enter') {
+    const value = e.target.value.trim();
+
+    // Parse the time input (handles formats like "1:32", "12:30", etc.)
+    const match = value.match(/^(\d{1,2}):(\d{2})$/);
+
+    if (match) {
+      const hour = parseInt(match[1], 10);
+      const minute = parseInt(match[2], 10);
+
+      // Validate ranges
+      if (hour >= 1 && hour <= 12 && minute >= 0 && minute <= 59) {
+        stopTimer();
+
+        // Update current time tracking
+        currentHour = hour;
+        currentMinute = minute;
+
+        // Format and set time digits
+        timeDigits = formatTimeDigits(hour, minute);
+        drawMatrix();
+        updateTimeInput();
+
+        if (timerCheckbox.checked) startTimer();
+      } else {
+        alert('Invalid time. Hour must be 1-12, minute must be 0-59.');
+        updateTimeInput();
+      }
+    } else {
+      alert('Invalid time format. Use format like "1:32" or "12:30"');
+      updateTimeInput();
+    }
+    e.preventDefault();
+  }
+});
+
+// Initialize time input
+updateTimeInput();
+
+
+
+// Checkbox for timer enable/disable
+timerCheckbox.addEventListener('change', function(e) {
+  localStorage.setItem('pixelMatrixTimerEnabled', timerCheckbox.checked);
+  if (timerCheckbox.checked) {
+    startTimer();
+  } else {
+    stopTimer();
+  }
+  // Remove focus to prevent spacebar toggling
+  e.target.blur();
+});
+
+
+
+/* ---- Draw pixels ---- */
+</script>
+
+</body>
+</html>
