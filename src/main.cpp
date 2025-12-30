@@ -31,8 +31,8 @@ const int MAX_RADIUS = 120;
 // Normal hands: 92% of max radius
 // Thin hand (3rd hand): 80% thickness of normal
 const float HAND_LENGTH_NORMAL = MAX_RADIUS * 0.92;
-const float HAND_THICKNESS_NORMAL = 3.0;
-const float HAND_THICKNESS_THIN = 2.4;  // 80% of normal
+const float HAND_THICKNESS_NORMAL = 13.0;
+const float HAND_THICKNESS_THIN = 9;  // 80% of normal
 
 // Hand angles (in degrees, 0 = up/north, increases clockwise)
 float hand1Angle = 0.0;
@@ -40,7 +40,7 @@ float hand2Angle = 120.0;
 float hand3Angle = 240.0;
 
 // Rotation speeds (degrees per frame)
-const float HAND1_SPEED = 1.2;   // Fastest
+const float HAND1_SPEED = 12;   // Fastest
 const float HAND2_SPEED = 0.8;   // Medium
 const float HAND3_SPEED = 0.5;   // Slowest
 
@@ -109,7 +109,7 @@ void loop() {
   canvas.fillScreen(GC9A01A_WHITE);
 
   // Optional: Draw reference circle to show the max radius
-  canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(200, 200, 200));
+  //canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(200, 200, 200));
 
   // Draw the three clock hands
   // Hand color: black (#111 from simulation)
@@ -123,7 +123,7 @@ void loop() {
   drawHand(CENTER_X, CENTER_Y, hand3Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
   // Draw center dot
-  canvas.fillCircle(CENTER_X, CENTER_Y, 3, GC9A01A_BLACK);
+  //canvas.fillCircle(CENTER_X, CENTER_Y, 3, GC9A01A_BLACK);
 
   // Present frame to display
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
