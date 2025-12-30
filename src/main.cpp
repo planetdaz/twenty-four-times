@@ -35,15 +35,38 @@ const float HAND_LENGTH_NORMAL = MAX_RADIUS * 0.92;
 const float HAND_THICKNESS_NORMAL = 13.0;
 const float HAND_THICKNESS_THIN = 9;  // 80% of normal
 
-// Hand angles (in degrees, 0 = up/north, increases clockwise)
-float hand1Angle = 0.0;
-float hand2Angle = 120.0;
-float hand3Angle = 240.0;
+// ---- Transition/Easing Types ----
+enum EasingType {
+  EASING_LINEAR = 0,
+  EASING_EASE_IN_OUT = 1,
+  EASING_ELASTIC = 2,
+  EASING_BOUNCE = 3,
+  EASING_BACK_IN = 4,
+  EASING_BACK_OUT = 5,
+  EASING_BACK_IN_OUT = 6
+};
 
-// Rotation speeds (degrees per second) - time-based animation
-const float HAND1_SPEED = 360.0;  // Fastest: 1 full rotation per second
-const float HAND2_SPEED = 24.0;   // Medium: 1 full rotation per 15 seconds
-const float HAND3_SPEED = 15.0;   // Slowest: 1 full rotation per 24 seconds
+// ---- Hand State ----
+struct HandState {
+  float currentAngle;
+  float targetAngle;
+  float startAngle;
+  int direction;  // 1 for CW, -1 for CCW
+};
+
+HandState hand1 = {0.0, 0.0, 0.0, 1};
+HandState hand2 = {120.0, 120.0, 120.0, 1};
+HandState hand3 = {240.0, 240.0, 240.0, 1};
+
+// ---- Transition State (shared by all hands) ----
+struct TransitionState {
+  unsigned long startTime;
+  float duration;  // in seconds
+  EasingType easing;
+  bool isActive;
+};
+
+TransitionState transition = {0, 0.0, EASING_ELASTIC, false};
 
 // Timing
 unsigned long lastUpdateTime = 0;
@@ -51,6 +74,128 @@ unsigned long lastUpdateTime = 0;
 // FPS tracking
 unsigned long fpsLastTime = 0;
 unsigned long fpsFrames = 0;
+
+// ---- Easing Functions ----
+// All easing functions take t in range [0, 1] and return eased value in range [0, 1]
+
+float easeLinear(float t) {
+  return t;
+}
+
+float easeInOut(float t) {
+  // Smoothstep (S-curve)
+  return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2;
+}
+
+float easeElasticOut(float t) {
+  if (t == 0 || t == 1) return t;
+  const float c4 = (2 * PI) / 3;
+  return pow(2, -10 * t) * sin((t * 10 - 0.75) * c4) + 1;
+}
+
+float easeBounceOut(float t) {
+  // Robert Penner's bounce ease out
+  if (t < (1.0 / 2.75)) {
+    return 7.5625 * t * t;
+  } else if (t < (2.0 / 2.75)) {
+    t -= (1.5 / 2.75);
+    return 7.5625 * t * t + 0.75;
+  } else if (t < (2.5 / 2.75)) {
+    t -= (2.25 / 2.75);
+    return 7.5625 * t * t + 0.9375;
+  } else {
+    t -= (2.625 / 2.75);
+    return 7.5625 * t * t + 0.984375;
+  }
+}
+
+float easeBackIn(float t) {
+  // Robert Penner's back ease in
+  const float c1 = 1.70158;
+  const float c3 = c1 + 1;
+  return c3 * t * t * t - c1 * t * t;
+}
+
+float easeBackOut(float t) {
+  // Robert Penner's back ease out
+  const float c1 = 1.70158;
+  const float c3 = c1 + 1;
+  return 1 + c3 * pow(t - 1, 3) + c1 * pow(t - 1, 2);
+}
+
+float easeBackInOut(float t) {
+  // Robert Penner's back ease in-out
+  const float c1 = 1.70158 * 1.525;
+  return t < 0.5
+    ? (pow(2 * t, 2) * ((c1 + 1) * 2 * t - c1)) / 2
+    : (pow(2 * t - 2, 2) * ((c1 + 1) * (t * 2 - 2) + c1) + 2) / 2;
+}
+
+// Apply the current easing function
+float applyEasing(float t, EasingType easing) {
+  switch (easing) {
+    case EASING_LINEAR: return easeLinear(t);
+    case EASING_EASE_IN_OUT: return easeInOut(t);
+    case EASING_ELASTIC: return easeElasticOut(t);
+    case EASING_BOUNCE: return easeBounceOut(t);
+    case EASING_BACK_IN: return easeBackIn(t);
+    case EASING_BACK_OUT: return easeBackOut(t);
+    case EASING_BACK_IN_OUT: return easeBackInOut(t);
+    default: return t;
+  }
+}
+
+// ---- Transition Control Functions ----
+
+// Start a transition for all hands (synchronized)
+// targetAngles: array of 3 target angles [hand1, hand2, hand3]
+// durationSeconds: transition duration in seconds
+// easing: easing type to use
+void startTransition(float target1, float target2, float target3, float durationSeconds, EasingType easing) {
+  // Set up transition state
+  transition.startTime = millis();
+  transition.duration = durationSeconds;
+  transition.easing = easing;
+  transition.isActive = true;
+
+  // Set up each hand with random direction
+  hand1.startAngle = hand1.currentAngle;
+  hand1.targetAngle = target1;
+  hand1.direction = (random(2) == 0) ? 1 : -1;  // Random CW or CCW
+
+  hand2.startAngle = hand2.currentAngle;
+  hand2.targetAngle = target2;
+  hand2.direction = (random(2) == 0) ? 1 : -1;
+
+  hand3.startAngle = hand3.currentAngle;
+  hand3.targetAngle = target3;
+  hand3.direction = (random(2) == 0) ? 1 : -1;
+}
+
+// Update a hand's angle based on transition state
+void updateHandAngle(HandState &hand, float t) {
+  // Apply easing function
+  float easedT = applyEasing(t, transition.easing);
+
+  // Calculate angle difference in the chosen direction
+  float diff = hand.targetAngle - hand.startAngle;
+
+  // Normalize to 0-360 range
+  while (diff < 0) diff += 360.0;
+  while (diff >= 360.0) diff -= 360.0;
+
+  // If going CCW, take the longer path
+  if (hand.direction < 0) {
+    diff = diff - 360.0;  // Go the other way
+  }
+
+  // Interpolate
+  hand.currentAngle = hand.startAngle + diff * easedT;
+
+  // Keep in 0-360 range
+  while (hand.currentAngle < 0) hand.currentAngle += 360.0;
+  while (hand.currentAngle >= 360.0) hand.currentAngle -= 360.0;
+}
 
 // ---- Helper functions ----
 
@@ -167,23 +312,56 @@ void setup() {
 
   // Initialize timing
   lastUpdateTime = millis();
+
+  // Initialize random seed
+  randomSeed(analogRead(0));
+
+  // ---- Demo: Start a test transition ----
+  // After 2 seconds, transition all hands to new positions
+  delay(2000);
+
+  Serial.println("\n=== Starting demo transition ===");
+  Serial.println("Easing: ELASTIC");
+  Serial.println("Duration: 2.0 seconds");
+  Serial.print("Hand 1: 0° -> 90° (");
+  Serial.print(hand1.direction > 0 ? "CW" : "CCW");
+  Serial.println(")");
+  Serial.print("Hand 2: 120° -> 210° (");
+  Serial.print(hand2.direction > 0 ? "CW" : "CCW");
+  Serial.println(")");
+  Serial.print("Hand 3: 240° -> 330° (");
+  Serial.print(hand3.direction > 0 ? "CW" : "CCW");
+  Serial.println(")");
+
+  startTransition(90.0, 210.0, 330.0, 2.0, EASING_ELASTIC);
 }
 
 void loop() {
-  // Calculate delta time (time since last update)
   unsigned long currentTime = millis();
-  float deltaTime = (currentTime - lastUpdateTime) / 1000.0;  // Convert to seconds
-  lastUpdateTime = currentTime;
 
-  // Update hand angles based on time elapsed (degrees per second)
-  hand1Angle += HAND1_SPEED * deltaTime;
-  hand2Angle += HAND2_SPEED * deltaTime;
-  hand3Angle += HAND3_SPEED * deltaTime;
+  // Update hand angles based on transition
+  if (transition.isActive) {
+    // Calculate elapsed time in seconds
+    float elapsed = (currentTime - transition.startTime) / 1000.0;
 
-  // Keep angles in 0-360 range
-  if (hand1Angle >= 360.0) hand1Angle -= 360.0;
-  if (hand2Angle >= 360.0) hand2Angle -= 360.0;
-  if (hand3Angle >= 360.0) hand3Angle -= 360.0;
+    // Calculate progress (0.0 to 1.0)
+    float t = elapsed / transition.duration;
+
+    if (t >= 1.0) {
+      // Transition complete
+      hand1.currentAngle = hand1.targetAngle;
+      hand2.currentAngle = hand2.targetAngle;
+      hand3.currentAngle = hand3.targetAngle;
+      transition.isActive = false;
+
+      Serial.println("Transition complete!");
+    } else {
+      // Update all hands with same progress value
+      updateHandAngle(hand1, t);
+      updateHandAngle(hand2, t);
+      updateHandAngle(hand3, t);
+    }
+  }
 
   // Clear canvas with white background (like the simulation)
   canvas.fillScreen(GC9A01A_WHITE);
@@ -196,11 +374,11 @@ void loop() {
   uint16_t handColor = GC9A01A_BLACK;
 
   // Draw hands 1 and 2 with normal thickness
-  drawHand(CENTER_X, CENTER_Y, hand1Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
-  drawHand(CENTER_X, CENTER_Y, hand2Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
+  drawHand(CENTER_X, CENTER_Y, hand1.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
+  drawHand(CENTER_X, CENTER_Y, hand2.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
 
   // Draw hand 3 with thin thickness
-  drawHand(CENTER_X, CENTER_Y, hand3Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
+  drawHand(CENTER_X, CENTER_Y, hand3.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
   // Draw center dot
   canvas.fillCircle(CENTER_X, CENTER_Y, 4, handColor);
