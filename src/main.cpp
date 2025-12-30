@@ -195,32 +195,26 @@ void startTransition(float target1, float target2, float target3, float duration
   // Set up hand 1
   hand1.startAngle = hand1.currentAngle;
   hand1.targetAngle = target1;
-  // If start == target, do a full 360° rotation in random direction
+  hand1.direction = (random(2) == 0) ? 1 : -1;  // Random CW or CCW
+  // If start == target, do a full 360° rotation in the chosen direction
   if (abs(hand1.currentAngle - target1) < 0.1) {
-    hand1.direction = (random(2) == 0) ? 1 : -1;  // Random CW or CCW
     hand1.targetAngle = hand1.currentAngle + (360.0 * hand1.direction);
-  } else {
-    hand1.direction = (random(2) == 0) ? 1 : -1;  // Random CW or CCW
   }
 
   // Set up hand 2
   hand2.startAngle = hand2.currentAngle;
   hand2.targetAngle = target2;
+  hand2.direction = (random(2) == 0) ? 1 : -1;
   if (abs(hand2.currentAngle - target2) < 0.1) {
-    hand2.direction = (random(2) == 0) ? 1 : -1;
     hand2.targetAngle = hand2.currentAngle + (360.0 * hand2.direction);
-  } else {
-    hand2.direction = (random(2) == 0) ? 1 : -1;
   }
 
   // Set up hand 3
   hand3.startAngle = hand3.currentAngle;
   hand3.targetAngle = target3;
+  hand3.direction = (random(2) == 0) ? 1 : -1;
   if (abs(hand3.currentAngle - target3) < 0.1) {
-    hand3.direction = (random(2) == 0) ? 1 : -1;
     hand3.targetAngle = hand3.currentAngle + (360.0 * hand3.direction);
-  } else {
-    hand3.direction = (random(2) == 0) ? 1 : -1;
   }
 }
 
