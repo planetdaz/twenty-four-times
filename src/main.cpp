@@ -40,10 +40,13 @@ float hand1Angle = 0.0;
 float hand2Angle = 120.0;
 float hand3Angle = 240.0;
 
-// Rotation speeds (degrees per frame)
-const float HAND1_SPEED = 12;   // Fastest
-const float HAND2_SPEED = 0.8;   // Medium
-const float HAND3_SPEED = 0.5;   // Slowest
+// Rotation speeds (degrees per second) - time-based animation
+const float HAND1_SPEED = 360.0;  // Fastest: 1 full rotation per second
+const float HAND2_SPEED = 24.0;   // Medium: 1 full rotation per 15 seconds
+const float HAND3_SPEED = 15.0;   // Slowest: 1 full rotation per 24 seconds
+
+// Timing
+unsigned long lastUpdateTime = 0;
 
 // FPS tracking
 unsigned long fpsLastTime = 0;
@@ -161,9 +164,27 @@ void setup() {
   canvas.fillScreen(GC9A01A_WHITE);
 
   Serial.println("\nSetup complete!");
+
+  // Initialize timing
+  lastUpdateTime = millis();
 }
 
 void loop() {
+  // Calculate delta time (time since last update)
+  unsigned long currentTime = millis();
+  float deltaTime = (currentTime - lastUpdateTime) / 1000.0;  // Convert to seconds
+  lastUpdateTime = currentTime;
+
+  // Update hand angles based on time elapsed (degrees per second)
+  hand1Angle += HAND1_SPEED * deltaTime;
+  hand2Angle += HAND2_SPEED * deltaTime;
+  hand3Angle += HAND3_SPEED * deltaTime;
+
+  // Keep angles in 0-360 range
+  if (hand1Angle >= 360.0) hand1Angle -= 360.0;
+  if (hand2Angle >= 360.0) hand2Angle -= 360.0;
+  if (hand3Angle >= 360.0) hand3Angle -= 360.0;
+
   // Clear canvas with white background (like the simulation)
   canvas.fillScreen(GC9A01A_WHITE);
 
@@ -186,16 +207,6 @@ void loop() {
 
   // Present frame to display
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
-
-  // Update hand angles
-  hand1Angle += HAND1_SPEED;
-  hand2Angle += HAND2_SPEED;
-  hand3Angle += HAND3_SPEED;
-
-  // Keep angles in 0-360 range
-  if (hand1Angle >= 360.0) hand1Angle -= 360.0;
-  if (hand2Angle >= 360.0) hand2Angle -= 360.0;
-  if (hand3Angle >= 360.0) hand3Angle -= 360.0;
 
   // ---- FPS tracking ----
   fpsFrames++;
