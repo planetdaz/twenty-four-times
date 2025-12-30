@@ -123,7 +123,13 @@ void setup() {
   Serial.print(HAND_LENGTH_NORMAL);
   Serial.println(" pixels");
 
+  Serial.print("Canvas buffer size: ");
+  Serial.print(DISPLAY_WIDTH * DISPLAY_HEIGHT * 2);
+  Serial.println(" bytes (115,200 bytes)");
+
   // ---- SPI ----
+  // ESP32-C3 doesn't have default SPI pins, so we specify them explicitly
+  // SPI.begin(SCK, MISO, MOSI, SS) - MISO=-1 since we don't need it for write-only TFT
   SPI.begin(tft_scl, -1, tft_sda);
 
   // ---- TFT ----
@@ -131,13 +137,18 @@ void setup() {
   tft.begin();
   tft.setRotation(0);
   Serial.println("TFT initialized!");
-  
-  // ---- Memory after TFT init ----
+
   Serial.print("Free heap after TFT init: ");
   Serial.print(ESP.getFreeHeap());
   Serial.println(" bytes");
 
-  Serial.println("Setup complete!");
+  Serial.println("\nNote: Canvas buffer (115,200 bytes) is allocated statically,");
+  Serial.println("      not from heap. This is good - no heap fragmentation!");
+
+  // Clear canvas to white
+  canvas.fillScreen(GC9A01A_WHITE);
+
+  Serial.println("\nSetup complete!");
 }
 
 void loop() {
