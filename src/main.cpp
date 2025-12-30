@@ -35,21 +35,272 @@ const float HAND_LENGTH_NORMAL = MAX_RADIUS * 0.92;
 const float HAND_THICKNESS_NORMAL = 13.0;
 const float HAND_THICKNESS_THIN = 9;  // 80% of normal
 
-// Hand angles (in degrees, 0 = up/north, increases clockwise)
-float hand1Angle = 0.0;
-float hand2Angle = 120.0;
-float hand3Angle = 240.0;
+// ---- Transition/Easing Types ----
+enum EasingType {
+  EASING_LINEAR = 0,
+  EASING_EASE_IN_OUT = 1,
+  EASING_ELASTIC = 2,
+  EASING_BOUNCE = 3,
+  EASING_BACK_IN = 4,
+  EASING_BACK_OUT = 5,
+  EASING_BACK_IN_OUT = 6
+};
 
-// Rotation speeds (degrees per frame)
-const float HAND1_SPEED = 12;   // Fastest
-const float HAND2_SPEED = 0.8;   // Medium
-const float HAND3_SPEED = 0.5;   // Slowest
+// ---- Hand State ----
+struct HandState {
+  float currentAngle;
+  float targetAngle;
+  float startAngle;
+  int direction;  // 1 for CW, -1 for CCW
+};
+
+HandState hand1 = {0.0, 0.0, 0.0, 1};
+HandState hand2 = {0.0, 0.0, 0.0, 1};
+HandState hand3 = {0.0, 0.0, 0.0, 1};
+
+// ---- Opacity State (shared by all hands) ----
+struct OpacityState {
+  uint8_t current;
+  uint8_t target;
+  uint8_t start;
+};
+
+OpacityState opacity = {0, 0, 0};  // Start invisible
+
+// ---- Transition State (shared by all hands) ----
+struct TransitionState {
+  unsigned long startTime;
+  float duration;  // in seconds
+  EasingType easing;
+  bool isActive;
+};
+
+TransitionState transition = {0, 0.0, EASING_ELASTIC, false};
+
+// Timing
+unsigned long lastUpdateTime = 0;
+unsigned long lastTransitionTime = 0;
+const unsigned long TRANSITION_INTERVAL = 5000;  // 5 seconds between transitions
+bool firstTransition = true;  // Flag for initial boot transition
 
 // FPS tracking
 unsigned long fpsLastTime = 0;
 unsigned long fpsFrames = 0;
 
+// ---- Helper Functions ----
+
+// Get a random angle from the allowed set: 0, 90, 180, 270
+float getRandomAngle() {
+  const float angles[] = {0.0, 90.0, 180.0, 270.0};
+  return angles[random(4)];
+}
+
+// Get a random easing type
+EasingType getRandomEasing() {
+  return (EasingType)random(7);  // 0-6 for the 7 easing types
+}
+
+// Get a random duration between 0.5 and 6.0 seconds
+float getRandomDuration() {
+  return 0.5 + (random(551) / 100.0);  // 0.5 to 6.0 seconds
+}
+
+// Get a random opacity from allowed set: 0 (transparent), 50 (faint), 255 (opaque)
+uint8_t getRandomOpacity() {
+  const uint8_t opacities[] = {0, 50, 255};
+  return opacities[random(3)];
+}
+
+// Get easing name for debug output
+const char* getEasingName(EasingType easing) {
+  switch (easing) {
+    case EASING_LINEAR: return "Linear";
+    case EASING_EASE_IN_OUT: return "Ease-in-out";
+    case EASING_ELASTIC: return "Elastic";
+    case EASING_BOUNCE: return "Bounce";
+    case EASING_BACK_IN: return "Back-in";
+    case EASING_BACK_OUT: return "Back-out";
+    case EASING_BACK_IN_OUT: return "Back-in-out";
+    default: return "Unknown";
+  }
+}
+
+// ---- Easing Functions ----
+// All easing functions take t in range [0, 1] and return eased value in range [0, 1]
+
+float easeLinear(float t) {
+  return t;
+}
+
+float easeInOut(float t) {
+  // Smoothstep (S-curve)
+  return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2;
+}
+
+float easeElasticOut(float t) {
+  if (t == 0 || t == 1) return t;
+  const float c4 = (2 * PI) / 3;
+  return pow(2, -10 * t) * sin((t * 10 - 0.75) * c4) + 1;
+}
+
+float easeBounceOut(float t) {
+  // Robert Penner's bounce ease out
+  if (t < (1.0 / 2.75)) {
+    return 7.5625 * t * t;
+  } else if (t < (2.0 / 2.75)) {
+    t -= (1.5 / 2.75);
+    return 7.5625 * t * t + 0.75;
+  } else if (t < (2.5 / 2.75)) {
+    t -= (2.25 / 2.75);
+    return 7.5625 * t * t + 0.9375;
+  } else {
+    t -= (2.625 / 2.75);
+    return 7.5625 * t * t + 0.984375;
+  }
+}
+
+float easeBackIn(float t) {
+  // Robert Penner's back ease in
+  const float c1 = 1.70158;
+  const float c3 = c1 + 1;
+  return c3 * t * t * t - c1 * t * t;
+}
+
+float easeBackOut(float t) {
+  // Robert Penner's back ease out
+  const float c1 = 1.70158;
+  const float c3 = c1 + 1;
+  return 1 + c3 * pow(t - 1, 3) + c1 * pow(t - 1, 2);
+}
+
+float easeBackInOut(float t) {
+  // Robert Penner's back ease in-out
+  const float c1 = 1.70158 * 1.525;
+  return t < 0.5
+    ? (pow(2 * t, 2) * ((c1 + 1) * 2 * t - c1)) / 2
+    : (pow(2 * t - 2, 2) * ((c1 + 1) * (t * 2 - 2) + c1) + 2) / 2;
+}
+
+// Apply the current easing function
+float applyEasing(float t, EasingType easing) {
+  switch (easing) {
+    case EASING_LINEAR: return easeLinear(t);
+    case EASING_EASE_IN_OUT: return easeInOut(t);
+    case EASING_ELASTIC: return easeElasticOut(t);
+    case EASING_BOUNCE: return easeBounceOut(t);
+    case EASING_BACK_IN: return easeBackIn(t);
+    case EASING_BACK_OUT: return easeBackOut(t);
+    case EASING_BACK_IN_OUT: return easeBackInOut(t);
+    default: return t;
+  }
+}
+
+// ---- Transition Control Functions ----
+
+// Start a transition for all hands (synchronized)
+// All hands transition together with shared opacity
+// durationSeconds: transition duration in seconds
+// easing: easing type to use (for angles; opacity always uses ease-in-out)
+void startTransition(float target1, float target2, float target3,
+                     uint8_t targetOpacity,
+                     float durationSeconds, EasingType easing) {
+  // Set up transition state
+  transition.startTime = millis();
+  transition.duration = durationSeconds;
+  transition.easing = easing;
+  transition.isActive = true;
+
+  // Set up shared opacity
+  opacity.start = opacity.current;
+  opacity.target = targetOpacity;
+
+  // Set up hand 1
+  hand1.startAngle = hand1.currentAngle;
+  hand1.targetAngle = target1;
+  hand1.direction = (random(2) == 0) ? 1 : -1;  // Random CW or CCW
+  // If start == target, do a full 360° rotation in the chosen direction
+  if (abs(hand1.currentAngle - target1) < 0.1) {
+    hand1.targetAngle = hand1.currentAngle + (360.0 * hand1.direction);
+  }
+
+  // Set up hand 2
+  hand2.startAngle = hand2.currentAngle;
+  hand2.targetAngle = target2;
+  hand2.direction = (random(2) == 0) ? 1 : -1;
+  if (abs(hand2.currentAngle - target2) < 0.1) {
+    hand2.targetAngle = hand2.currentAngle + (360.0 * hand2.direction);
+  }
+
+  // Set up hand 3
+  hand3.startAngle = hand3.currentAngle;
+  hand3.targetAngle = target3;
+  hand3.direction = (random(2) == 0) ? 1 : -1;
+  if (abs(hand3.currentAngle - target3) < 0.1) {
+    hand3.targetAngle = hand3.currentAngle + (360.0 * hand3.direction);
+  }
+}
+
+// Update a hand's angle based on transition state
+void updateHandAngle(HandState &hand, float t) {
+  // Apply easing function for angle (uses transition easing)
+  float easedT = applyEasing(t, transition.easing);
+
+  // Calculate angle difference
+  float diff = hand.targetAngle - hand.startAngle;
+
+  // For full 360° rotations, diff is already set correctly (±360)
+  // For normal transitions, normalize and apply direction
+  if (abs(diff) < 359.0) {  // Not a full rotation
+    // Normalize to 0-360 range
+    while (diff < 0) diff += 360.0;
+    while (diff >= 360.0) diff -= 360.0;
+
+    // If going CCW, take the longer path
+    if (hand.direction < 0) {
+      diff = diff - 360.0;  // Go the other way
+    }
+  }
+
+  // Interpolate angle
+  hand.currentAngle = hand.startAngle + diff * easedT;
+
+  // Keep in 0-360 range
+  while (hand.currentAngle < 0) hand.currentAngle += 360.0;
+  while (hand.currentAngle >= 360.0) hand.currentAngle -= 360.0;
+}
+
+// Update shared opacity based on transition state
+void updateOpacity(float t) {
+  // Interpolate opacity (always uses ease-in-out)
+  float opacityT = easeInOut(t);
+  opacity.current = opacity.start + (opacity.target - opacity.start) * opacityT;
+}
+
 // ---- Helper functions ----
+
+// Blend a color with background based on opacity (0-255)
+// bgColor and fgColor are RGB565 format
+uint16_t blendColor(uint16_t bgColor, uint16_t fgColor, uint8_t opacity) {
+  if (opacity == 255) return fgColor;
+  if (opacity == 0) return bgColor;
+
+  // Extract RGB components from RGB565
+  uint8_t bgR = (bgColor >> 11) & 0x1F;
+  uint8_t bgG = (bgColor >> 5) & 0x3F;
+  uint8_t bgB = bgColor & 0x1F;
+
+  uint8_t fgR = (fgColor >> 11) & 0x1F;
+  uint8_t fgG = (fgColor >> 5) & 0x3F;
+  uint8_t fgB = fgColor & 0x1F;
+
+  // Blend (alpha blend formula)
+  uint8_t outR = ((fgR * opacity) + (bgR * (255 - opacity))) / 255;
+  uint8_t outG = ((fgG * opacity) + (bgG * (255 - opacity))) / 255;
+  uint8_t outB = ((fgB * opacity) + (bgB * (255 - opacity))) / 255;
+
+  // Pack back to RGB565
+  return (outR << 11) | (outG << 5) | outB;
+}
 
 // Draw a thick clock hand using 2 filled triangles (forming a rectangle) + rounded caps
 // This is more efficient than drawing many circles along the line
@@ -161,41 +412,160 @@ void setup() {
   canvas.fillScreen(GC9A01A_WHITE);
 
   Serial.println("\nSetup complete!");
+
+  // Initialize timing
+  lastUpdateTime = millis();
+  lastTransitionTime = millis();
+
+  // Initialize random seed
+  randomSeed(analogRead(0));
+
+  Serial.println("\n=== Boot Sequence ===");
+  Serial.println("Starting with all hands at 0°, opacity 0 (invisible)");
+  Serial.println("After 5 seconds: fade in to random angles");
+  Serial.println("Then: random transitions every 5 seconds");
+  Serial.println("  - Normal: random angles, opacity 255");
+  Serial.println("  - NOP (< 1 in 5): all hands at 225°, opacity 50\n");
 }
 
 void loop() {
+  unsigned long currentTime = millis();
+
+  // Update hand angles based on transition
+  if (transition.isActive) {
+    // Calculate elapsed time in seconds
+    float elapsed = (currentTime - transition.startTime) / 1000.0;
+
+    // Calculate progress (0.0 to 1.0)
+    float t = elapsed / transition.duration;
+
+    if (t >= 1.0) {
+      // Transition complete
+      hand1.currentAngle = hand1.targetAngle;
+      hand2.currentAngle = hand2.targetAngle;
+      hand3.currentAngle = hand3.targetAngle;
+      opacity.current = opacity.target;
+      transition.isActive = false;
+
+      // Start the 5-second timer AFTER transition completes
+      lastTransitionTime = currentTime;
+    } else {
+      // Update all hands with same progress value
+      updateHandAngle(hand1, t);
+      updateHandAngle(hand2, t);
+      updateHandAngle(hand3, t);
+      updateOpacity(t);
+    }
+  }
+
+  // ---- Random Demo Loop: Start new transition 5 seconds after previous one completes ----
+  if (!transition.isActive && (currentTime - lastTransitionTime >= TRANSITION_INTERVAL)) {
+    float target1, target2, target3;
+    uint8_t targetOpacity;
+    float duration;
+    EasingType easing;
+    bool isNOP = false;
+
+    if (firstTransition) {
+      // First transition after boot: fade in to random angles at full opacity
+      target1 = getRandomAngle();
+      target2 = getRandomAngle();
+      target3 = getRandomAngle();
+      targetOpacity = 255;
+      duration = getRandomDuration();
+      easing = getRandomEasing();
+      firstTransition = false;
+
+      Serial.println("\n=== BOOT: Fading in ===");
+    } else {
+      // Random chance (less than 1 in 5) for NOP state
+      if (random(5) == 0) {
+        // NOP state: all hands at 225°, opacity 50
+        target1 = 225.0;
+        target2 = 225.0;
+        target3 = 225.0;
+        targetOpacity = 50;
+        duration = getRandomDuration();
+        easing = getRandomEasing();
+        isNOP = true;
+
+        Serial.println("\n=== NOP State ===");
+      } else {
+        // Normal random transition at full opacity
+        target1 = getRandomAngle();
+        target2 = getRandomAngle();
+        target3 = getRandomAngle();
+        targetOpacity = 255;
+        duration = getRandomDuration();
+        easing = getRandomEasing();
+      }
+    }
+
+    // Start the transition
+    startTransition(target1, target2, target3, targetOpacity, duration, easing);
+
+    // Print debug info (if not already printed above)
+    if (!firstTransition && !isNOP) {
+      Serial.println("\n=== New Transition ===");
+    }
+    Serial.print("Easing: ");
+    Serial.println(getEasingName(easing));
+    Serial.print("Duration: ");
+    Serial.print(duration, 2);
+    Serial.println(" seconds");
+    Serial.print("Opacity: ");
+    Serial.print(opacity.start);
+    Serial.print(" -> ");
+    Serial.println(targetOpacity);
+    Serial.print("Hand 1: ");
+    Serial.print(hand1.startAngle, 0);
+    Serial.print("° -> ");
+    Serial.print(target1, 0);
+    Serial.print("° (");
+    Serial.print(hand1.direction > 0 ? "CW" : "CCW");
+    Serial.println(")");
+    Serial.print("Hand 2: ");
+    Serial.print(hand2.startAngle, 0);
+    Serial.print("° -> ");
+    Serial.print(target2, 0);
+    Serial.print("° (");
+    Serial.print(hand2.direction > 0 ? "CW" : "CCW");
+    Serial.println(")");
+    Serial.print("Hand 3: ");
+    Serial.print(hand3.startAngle, 0);
+    Serial.print("° -> ");
+    Serial.print(target3, 0);
+    Serial.print("° (");
+    Serial.print(hand3.direction > 0 ? "CW" : "CCW");
+    Serial.println(")");
+  }
+
   // Clear canvas with white background (like the simulation)
-  canvas.fillScreen(GC9A01A_WHITE);
+  uint16_t bgColor = GC9A01A_WHITE;
+  canvas.fillScreen(bgColor);
 
   // Optional: Draw reference circle to show the max radius
   // canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(200, 200, 200));
 
-  // Draw the three clock hands
-  // Hand color: black
-  uint16_t handColor = GC9A01A_BLACK;
+  // Draw the three clock hands with opacity blending
+  // Base hand color: black
+  uint16_t baseHandColor = GC9A01A_BLACK;
+
+  // Blend color based on shared opacity
+  uint16_t handColor = blendColor(bgColor, baseHandColor, opacity.current);
 
   // Draw hands 1 and 2 with normal thickness
-  drawHand(CENTER_X, CENTER_Y, hand1Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
-  drawHand(CENTER_X, CENTER_Y, hand2Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
+  drawHand(CENTER_X, CENTER_Y, hand1.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
+  drawHand(CENTER_X, CENTER_Y, hand2.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
 
   // Draw hand 3 with thin thickness
-  drawHand(CENTER_X, CENTER_Y, hand3Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
+  drawHand(CENTER_X, CENTER_Y, hand3.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
-  // Draw center dot
-  canvas.fillCircle(CENTER_X, CENTER_Y, 4, handColor);
+  // Draw center dot (always full opacity)
+  canvas.fillCircle(CENTER_X, CENTER_Y, 4, baseHandColor);
 
   // Present frame to display
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
-
-  // Update hand angles
-  hand1Angle += HAND1_SPEED;
-  hand2Angle += HAND2_SPEED;
-  hand3Angle += HAND3_SPEED;
-
-  // Keep angles in 0-360 range
-  if (hand1Angle >= 360.0) hand1Angle -= 360.0;
-  if (hand2Angle >= 360.0) hand2Angle -= 360.0;
-  if (hand3Angle >= 360.0) hand3Angle -= 360.0;
 
   // ---- FPS tracking ----
   fpsFrames++;
