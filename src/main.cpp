@@ -123,6 +123,16 @@ const ColorPair colorPalette[] = {
   {tft.color565(245, 222, 179), tft.color565(47, 79, 79), "Dark Slate on Wheat"},   // Wheat bg, dark slate fg
   {tft.color565(139, 69, 19), tft.color565(255, 248, 220), "Cornsilk on Saddle Brown"},  // Saddle brown bg, cornsilk fg
   {tft.color565(34, 49, 63), tft.color565(236, 240, 241), "Light Gray on Navy"},    // Navy bg, light gray fg
+
+  // Bright vibrant colors
+  {tft.color565(255, 69, 0), tft.color565(255, 255, 224), "Light Yellow on Red-Orange"},     // Red-orange bg, light yellow fg
+  {tft.color565(255, 215, 0), tft.color565(139, 0, 139), "Dark Magenta on Gold"},            // Gold bg, dark magenta fg
+  {tft.color565(0, 191, 255), tft.color565(255, 255, 255), "White on Deep Sky Blue"},        // Deep sky blue bg, white fg
+  {tft.color565(255, 20, 147), tft.color565(255, 255, 240), "Ivory on Deep Pink"},           // Deep pink bg, ivory fg
+  {tft.color565(50, 205, 50), tft.color565(25, 25, 112), "Midnight Blue on Lime Green"},     // Lime green bg, midnight blue fg
+  {tft.color565(138, 43, 226), tft.color565(255, 250, 205), "Lemon Chiffon on Blue Violet"}, // Blue violet bg, lemon chiffon fg
+  {tft.color565(255, 140, 0), tft.color565(25, 25, 112), "Midnight Blue on Dark Orange"},    // Dark orange bg, midnight blue fg
+  {tft.color565(0, 206, 209), tft.color565(139, 0, 0), "Dark Red on Turquoise"},             // Turquoise bg, dark red fg
 };
 
 const int paletteSize = sizeof(colorPalette) / sizeof(ColorPair);
@@ -145,9 +155,16 @@ EasingType getRandomEasing() {
   return (EasingType)random(7);  // 0-6 for the 7 easing types
 }
 
-// Get a random duration between 0.5 and 6.0 seconds
+// Get a random duration (0.5 to 9.0 seconds) with weighted distribution
+// Favors longer durations - most animations look better when slower
 float getRandomDuration() {
-  return 0.5 + (random(551) / 100.0);  // 0.5 to 6.0 seconds
+  // Weighted random: higher numbers = longer durations more likely
+  // Using triangular distribution: pick 2 random numbers, use the max
+  // This biases toward higher values (longer durations)
+  float r1 = random(851) / 100.0;  // 0.0 to 8.5
+  float r2 = random(851) / 100.0;  // 0.0 to 8.5
+  float duration = max(r1, r2) + 0.5;  // 0.5 to 9.0 seconds, biased toward longer
+  return duration;
 }
 
 // Get a random opacity from allowed set: 0 (transparent), 50 (faint), 255 (opaque)
