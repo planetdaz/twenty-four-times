@@ -70,10 +70,44 @@ TransitionState transition = {0, 0.0, EASING_ELASTIC, false};
 
 // Timing
 unsigned long lastUpdateTime = 0;
+unsigned long lastTransitionTime = 0;
+const unsigned long TRANSITION_INTERVAL = 5000;  // 5 seconds between transitions
 
 // FPS tracking
 unsigned long fpsLastTime = 0;
 unsigned long fpsFrames = 0;
+
+// ---- Helper Functions ----
+
+// Get a random angle from the allowed set: 0, 90, 180, 270
+float getRandomAngle() {
+  const float angles[] = {0.0, 90.0, 180.0, 270.0};
+  return angles[random(4)];
+}
+
+// Get a random easing type
+EasingType getRandomEasing() {
+  return (EasingType)random(7);  // 0-6 for the 7 easing types
+}
+
+// Get a random duration between 0.5 and 6.0 seconds
+float getRandomDuration() {
+  return 0.5 + (random(551) / 100.0);  // 0.5 to 6.0 seconds
+}
+
+// Get easing name for debug output
+const char* getEasingName(EasingType easing) {
+  switch (easing) {
+    case EASING_LINEAR: return "Linear";
+    case EASING_EASE_IN_OUT: return "Ease-in-out";
+    case EASING_ELASTIC: return "Elastic";
+    case EASING_BOUNCE: return "Bounce";
+    case EASING_BACK_IN: return "Back-in";
+    case EASING_BACK_OUT: return "Back-out";
+    case EASING_BACK_IN_OUT: return "Back-in-out";
+    default: return "Unknown";
+  }
+}
 
 // ---- Easing Functions ----
 // All easing functions take t in range [0, 1] and return eased value in range [0, 1]
@@ -312,32 +346,63 @@ void setup() {
 
   // Initialize timing
   lastUpdateTime = millis();
+  lastTransitionTime = millis();
 
   // Initialize random seed
   randomSeed(analogRead(0));
 
-  // ---- Demo: Start a test transition ----
-  // After 2 seconds, transition all hands to new positions
-  delay(2000);
-
-  Serial.println("\n=== Starting demo transition ===");
-  Serial.println("Easing: ELASTIC");
-  Serial.println("Duration: 2.0 seconds");
-  Serial.print("Hand 1: 0° -> 90° (");
-  Serial.print(hand1.direction > 0 ? "CW" : "CCW");
-  Serial.println(")");
-  Serial.print("Hand 2: 120° -> 210° (");
-  Serial.print(hand2.direction > 0 ? "CW" : "CCW");
-  Serial.println(")");
-  Serial.print("Hand 3: 240° -> 330° (");
-  Serial.print(hand3.direction > 0 ? "CW" : "CCW");
-  Serial.println(")");
-
-  startTransition(90.0, 210.0, 330.0, 2.0, EASING_ELASTIC);
+  Serial.println("\n=== Starting random demo loop ===");
+  Serial.println("Every 5 seconds: new random transition");
+  Serial.println("Angles: 0°, 90°, 180°, 270°");
+  Serial.println("Duration: 0.5 - 6.0 seconds");
+  Serial.println("Easing: Random\n");
 }
 
 void loop() {
   unsigned long currentTime = millis();
+
+  // ---- Random Demo Loop: Start new transition every 5 seconds ----
+  if (currentTime - lastTransitionTime >= TRANSITION_INTERVAL) {
+    // Generate random transition parameters
+    float target1 = getRandomAngle();
+    float target2 = getRandomAngle();
+    float target3 = getRandomAngle();
+    float duration = getRandomDuration();
+    EasingType easing = getRandomEasing();
+
+    // Start the transition
+    startTransition(target1, target2, target3, duration, easing);
+    lastTransitionTime = currentTime;
+
+    // Print debug info
+    Serial.println("\n=== New Transition ===");
+    Serial.print("Easing: ");
+    Serial.println(getEasingName(easing));
+    Serial.print("Duration: ");
+    Serial.print(duration, 2);
+    Serial.println(" seconds");
+    Serial.print("Hand 1: ");
+    Serial.print(hand1.startAngle, 0);
+    Serial.print("° -> ");
+    Serial.print(target1, 0);
+    Serial.print("° (");
+    Serial.print(hand1.direction > 0 ? "CW" : "CCW");
+    Serial.println(")");
+    Serial.print("Hand 2: ");
+    Serial.print(hand2.startAngle, 0);
+    Serial.print("° -> ");
+    Serial.print(target2, 0);
+    Serial.print("° (");
+    Serial.print(hand2.direction > 0 ? "CW" : "CCW");
+    Serial.println(")");
+    Serial.print("Hand 3: ");
+    Serial.print(hand3.startAngle, 0);
+    Serial.print("° -> ");
+    Serial.print(target3, 0);
+    Serial.print("° (");
+    Serial.print(hand3.direction > 0 ? "CW" : "CCW");
+    Serial.println(")");
+  }
 
   // Update hand angles based on transition
   if (transition.isActive) {
@@ -353,8 +418,6 @@ void loop() {
       hand2.currentAngle = hand2.targetAngle;
       hand3.currentAngle = hand3.targetAngle;
       transition.isActive = false;
-
-      Serial.println("Transition complete!");
     } else {
       // Update all hands with same progress value
       updateHandAngle(hand1, t);
