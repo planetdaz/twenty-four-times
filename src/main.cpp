@@ -1,13 +1,22 @@
 #include <Arduino.h>
-#include <TFT_eSPI.h>
 #include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_GC9A01A.h>
 
 // Proof of concept: Three rotating clock hands on a 240x240 circular display
 // Based on the twenty-four-times simulation
-// Now using TFT_eSPI for anti-aliased thick lines
 
-TFT_eSPI tft = TFT_eSPI();
-TFT_eSprite sprite = TFT_eSprite(&tft);
+// 240x240 RGB565 buffer (~115 KB)
+GFXcanvas16 canvas(240, 240);
+
+// ---- TFT pin names ----
+#define tft_rst  4   // D2 / GPIO4 / pin 3
+#define tft_cs   5   // D3 / GPIO5 / pin 4
+#define tft_dc   6   // D4 / GPIO6 / pin 5
+#define tft_scl  8   // D8 / GPIO8 / pin 9
+#define tft_sda  10  // D10 / GPIO10 / pin 11
+
+Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
 
 // ---- Display geometry ----
 const int DISPLAY_WIDTH = 240;
@@ -41,29 +50,34 @@ unsigned long fpsFrames = 0;
 
 // ---- Helper functions ----
 
-// Get coordinates of end of a line, pivot at x,y, length r, angle a
-void getCoord(float x, float y, float *xp, float *yp, float r, float a) {
-  float angleRad = (a - 90.0) * DEG_TO_RAD;
-  *xp = cos(angleRad) * r + x;
-  *yp = sin(angleRad) * r + y;
-}
-
-// Draw a clock hand using TFT_eSPI's drawWideLine for smooth anti-aliased rendering
-// angle: degrees, 0 = up, clockwise positive
-// length: length of hand in pixels
-// thickness: line thickness
-// color: RGB565 color
+// Draw a thick clock hand by drawing filled circles along the line
+// This creates smooth thick lines without gaps
+// Optimized version with fewer steps for better performance
 void drawHand(float cx, float cy, float angleDeg, float length, float thickness, uint16_t color) {
-  float x2, y2;
-  getCoord(cx, cy, &x2, &y2, length, angleDeg);
-  sprite.drawWideLine(cx, cy, x2, y2, thickness, color);
+  // Convert angle to radians (subtract 90 to make 0 degrees point up)
+  float angleRad = (angleDeg - 90.0) * PI / 180.0;
+
+  // Calculate end point
+  float x2 = cx + cos(angleRad) * length;
+  float y2 = cy + sin(angleRad) * length;
+
+  // Draw thick line using filled circles
+  float radius = thickness / 2.0;
+  int steps = (int)(length / (radius * 0.5));  // Optimized: fewer steps, circles overlap by 50%
+
+  for (int i = 0; i <= steps; i++) {
+    float t = (float)i / steps;
+    int x = cx + (x2 - cx) * t;
+    int y = cy + (y2 - cy) * t;
+    canvas.fillCircle(x, y, (int)radius, color);
+  }
 }
 
 void setup() {
   Serial.begin(115200);
   delay(200);
 
-  Serial.println("Twenty-Four Times - Clock Hands Proof of Concept (TFT_eSPI)");
+  Serial.println("Twenty-Four Times - Clock Hands Proof of Concept (Adafruit GFX)");
   Serial.print("Max radius: ");
   Serial.print(MAX_RADIUS);
   Serial.println(" pixels");
@@ -71,38 +85,26 @@ void setup() {
   Serial.print(HAND_LENGTH_NORMAL);
   Serial.println(" pixels");
 
+  // ---- SPI ----
+  SPI.begin(tft_scl, -1, tft_sda);
+
   // ---- TFT ----
-  tft.init();
+  tft.begin();
   tft.setRotation(0);
-  tft.fillScreen(TFT_WHITE);
 
-  // ---- Create sprite ----
-  // Use 8-bit color to reduce memory usage (240x240x1 = 57,600 bytes vs 115,200 for 16-bit)
-  sprite.setColorDepth(8);
-  bool spriteCreated = sprite.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT);
-
-  if (!spriteCreated) {
-    Serial.println("ERROR: Failed to create sprite! Not enough memory.");
-    Serial.print("Free heap: ");
-    Serial.println(ESP.getFreeHeap());
-    while(1) delay(1000);  // Halt
-  }
-
-  Serial.print("Sprite created successfully! Free heap: ");
-  Serial.println(ESP.getFreeHeap());
   Serial.println("Setup complete!");
 }
 
 void loop() {
-  // Clear sprite with white background (like the simulation)
-  sprite.fillSprite(TFT_WHITE);
+  // Clear canvas with white background (like the simulation)
+  canvas.fillScreen(GC9A01A_WHITE);
 
   // Optional: Draw reference circle to show the max radius
-  // sprite.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, TFT_LIGHTGREY);
+  // canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(200, 200, 200));
 
   // Draw the three clock hands
-  // Hand color: black (#111 from simulation)
-  uint16_t handColor = TFT_BLACK;
+  // Hand color: black
+  uint16_t handColor = GC9A01A_BLACK;
 
   // Draw hands 1 and 2 with normal thickness
   drawHand(CENTER_X, CENTER_Y, hand1Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
@@ -112,10 +114,10 @@ void loop() {
   drawHand(CENTER_X, CENTER_Y, hand3Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
   // Draw center dot
-  sprite.fillSmoothCircle(CENTER_X, CENTER_Y, 4, handColor);
+  canvas.fillCircle(CENTER_X, CENTER_Y, 4, handColor);
 
-  // Push sprite to display (no flicker!)
-  sprite.pushSprite(0, 0);
+  // Present frame to display
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
   // Update hand angles
   hand1Angle += HAND1_SPEED;
