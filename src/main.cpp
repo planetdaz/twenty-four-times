@@ -58,6 +58,15 @@ HandState hand1 = {0.0, 0.0, 0.0, 1};
 HandState hand2 = {120.0, 120.0, 120.0, 1};
 HandState hand3 = {240.0, 240.0, 240.0, 1};
 
+// ---- Opacity State (shared by all hands) ----
+struct OpacityState {
+  uint8_t current;
+  uint8_t target;
+  uint8_t start;
+};
+
+OpacityState opacity = {255, 255, 255};
+
 // ---- Transition State (shared by all hands) ----
 struct TransitionState {
   unsigned long startTime;
@@ -93,6 +102,12 @@ EasingType getRandomEasing() {
 // Get a random duration between 0.5 and 6.0 seconds
 float getRandomDuration() {
   return 0.5 + (random(551) / 100.0);  // 0.5 to 6.0 seconds
+}
+
+// Get a random opacity from allowed set: 0 (transparent), 50 (faint), 255 (opaque)
+uint8_t getRandomOpacity() {
+  const uint8_t opacities[] = {0, 50, 255};
+  return opacities[random(3)];
 }
 
 // Get easing name for debug output
@@ -182,15 +197,21 @@ float applyEasing(float t, EasingType easing) {
 // ---- Transition Control Functions ----
 
 // Start a transition for all hands (synchronized)
-// targetAngles: array of 3 target angles [hand1, hand2, hand3]
+// All hands transition together with shared opacity
 // durationSeconds: transition duration in seconds
-// easing: easing type to use
-void startTransition(float target1, float target2, float target3, float durationSeconds, EasingType easing) {
+// easing: easing type to use (for angles; opacity always uses ease-in-out)
+void startTransition(float target1, float target2, float target3,
+                     uint8_t targetOpacity,
+                     float durationSeconds, EasingType easing) {
   // Set up transition state
   transition.startTime = millis();
   transition.duration = durationSeconds;
   transition.easing = easing;
   transition.isActive = true;
+
+  // Set up shared opacity
+  opacity.start = opacity.current;
+  opacity.target = targetOpacity;
 
   // Set up hand 1
   hand1.startAngle = hand1.currentAngle;
@@ -220,7 +241,7 @@ void startTransition(float target1, float target2, float target3, float duration
 
 // Update a hand's angle based on transition state
 void updateHandAngle(HandState &hand, float t) {
-  // Apply easing function
+  // Apply easing function for angle (uses transition easing)
   float easedT = applyEasing(t, transition.easing);
 
   // Calculate angle difference
@@ -239,7 +260,7 @@ void updateHandAngle(HandState &hand, float t) {
     }
   }
 
-  // Interpolate
+  // Interpolate angle
   hand.currentAngle = hand.startAngle + diff * easedT;
 
   // Keep in 0-360 range
@@ -247,7 +268,38 @@ void updateHandAngle(HandState &hand, float t) {
   while (hand.currentAngle >= 360.0) hand.currentAngle -= 360.0;
 }
 
+// Update shared opacity based on transition state
+void updateOpacity(float t) {
+  // Interpolate opacity (always uses ease-in-out)
+  float opacityT = easeInOut(t);
+  opacity.current = opacity.start + (opacity.target - opacity.start) * opacityT;
+}
+
 // ---- Helper functions ----
+
+// Blend a color with background based on opacity (0-255)
+// bgColor and fgColor are RGB565 format
+uint16_t blendColor(uint16_t bgColor, uint16_t fgColor, uint8_t opacity) {
+  if (opacity == 255) return fgColor;
+  if (opacity == 0) return bgColor;
+
+  // Extract RGB components from RGB565
+  uint8_t bgR = (bgColor >> 11) & 0x1F;
+  uint8_t bgG = (bgColor >> 5) & 0x3F;
+  uint8_t bgB = bgColor & 0x1F;
+
+  uint8_t fgR = (fgColor >> 11) & 0x1F;
+  uint8_t fgG = (fgColor >> 5) & 0x3F;
+  uint8_t fgB = fgColor & 0x1F;
+
+  // Blend (alpha blend formula)
+  uint8_t outR = ((fgR * opacity) + (bgR * (255 - opacity))) / 255;
+  uint8_t outG = ((fgG * opacity) + (bgG * (255 - opacity))) / 255;
+  uint8_t outB = ((fgB * opacity) + (bgB * (255 - opacity))) / 255;
+
+  // Pack back to RGB565
+  return (outR << 11) | (outG << 5) | outB;
+}
 
 // Draw a thick clock hand using 2 filled triangles (forming a rectangle) + rounded caps
 // This is more efficient than drawing many circles along the line
@@ -390,6 +442,7 @@ void loop() {
       hand1.currentAngle = hand1.targetAngle;
       hand2.currentAngle = hand2.targetAngle;
       hand3.currentAngle = hand3.targetAngle;
+      opacity.current = opacity.target;
       transition.isActive = false;
 
       // Start the 5-second timer AFTER transition completes
@@ -399,6 +452,7 @@ void loop() {
       updateHandAngle(hand1, t);
       updateHandAngle(hand2, t);
       updateHandAngle(hand3, t);
+      updateOpacity(t);
     }
   }
 
@@ -408,11 +462,12 @@ void loop() {
     float target1 = getRandomAngle();
     float target2 = getRandomAngle();
     float target3 = getRandomAngle();
+    uint8_t targetOpacity = getRandomOpacity();
     float duration = getRandomDuration();
     EasingType easing = getRandomEasing();
 
     // Start the transition
-    startTransition(target1, target2, target3, duration, easing);
+    startTransition(target1, target2, target3, targetOpacity, duration, easing);
 
     // Print debug info
     Serial.println("\n=== New Transition ===");
@@ -421,6 +476,10 @@ void loop() {
     Serial.print("Duration: ");
     Serial.print(duration, 2);
     Serial.println(" seconds");
+    Serial.print("Opacity: ");
+    Serial.print(opacity.start);
+    Serial.print(" -> ");
+    Serial.println(targetOpacity);
     Serial.print("Hand 1: ");
     Serial.print(hand1.startAngle, 0);
     Serial.print("° -> ");
@@ -445,14 +504,18 @@ void loop() {
   }
 
   // Clear canvas with white background (like the simulation)
-  canvas.fillScreen(GC9A01A_WHITE);
+  uint16_t bgColor = GC9A01A_WHITE;
+  canvas.fillScreen(bgColor);
 
   // Optional: Draw reference circle to show the max radius
   // canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(200, 200, 200));
 
-  // Draw the three clock hands
-  // Hand color: black
-  uint16_t handColor = GC9A01A_BLACK;
+  // Draw the three clock hands with opacity blending
+  // Base hand color: black
+  uint16_t baseHandColor = GC9A01A_BLACK;
+
+  // Blend color based on shared opacity
+  uint16_t handColor = blendColor(bgColor, baseHandColor, opacity.current);
 
   // Draw hands 1 and 2 with normal thickness
   drawHand(CENTER_X, CENTER_Y, hand1.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
@@ -461,8 +524,8 @@ void loop() {
   // Draw hand 3 with thin thickness
   drawHand(CENTER_X, CENTER_Y, hand3.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
-  // Draw center dot
-  canvas.fillCircle(CENTER_X, CENTER_Y, 4, handColor);
+  // Draw center dot (always full opacity)
+  canvas.fillCircle(CENTER_X, CENTER_Y, 4, baseHandColor);
 
   // Present frame to display
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
