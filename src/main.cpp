@@ -55,8 +55,8 @@ struct HandState {
 };
 
 HandState hand1 = {0.0, 0.0, 0.0, 1};
-HandState hand2 = {120.0, 120.0, 120.0, 1};
-HandState hand3 = {240.0, 240.0, 240.0, 1};
+HandState hand2 = {0.0, 0.0, 0.0, 1};
+HandState hand3 = {0.0, 0.0, 0.0, 1};
 
 // ---- Opacity State (shared by all hands) ----
 struct OpacityState {
@@ -65,7 +65,7 @@ struct OpacityState {
   uint8_t start;
 };
 
-OpacityState opacity = {255, 255, 255};
+OpacityState opacity = {0, 0, 0};  // Start invisible
 
 // ---- Transition State (shared by all hands) ----
 struct TransitionState {
@@ -81,6 +81,7 @@ TransitionState transition = {0, 0.0, EASING_ELASTIC, false};
 unsigned long lastUpdateTime = 0;
 unsigned long lastTransitionTime = 0;
 const unsigned long TRANSITION_INTERVAL = 5000;  // 5 seconds between transitions
+bool firstTransition = true;  // Flag for initial boot transition
 
 // FPS tracking
 unsigned long fpsLastTime = 0;
@@ -419,11 +420,12 @@ void setup() {
   // Initialize random seed
   randomSeed(analogRead(0));
 
-  Serial.println("\n=== Starting random demo loop ===");
-  Serial.println("Every 5 seconds: new random transition");
-  Serial.println("Angles: 0°, 90°, 180°, 270°");
-  Serial.println("Duration: 0.5 - 6.0 seconds");
-  Serial.println("Easing: Random\n");
+  Serial.println("\n=== Boot Sequence ===");
+  Serial.println("Starting with all hands at 0°, opacity 0 (invisible)");
+  Serial.println("After 5 seconds: fade in to random angles");
+  Serial.println("Then: random transitions every 5 seconds");
+  Serial.println("  - Normal: random angles, opacity 255");
+  Serial.println("  - NOP (< 1 in 5): all hands at 225°, opacity 50\n");
 }
 
 void loop() {
@@ -458,19 +460,54 @@ void loop() {
 
   // ---- Random Demo Loop: Start new transition 5 seconds after previous one completes ----
   if (!transition.isActive && (currentTime - lastTransitionTime >= TRANSITION_INTERVAL)) {
-    // Generate random transition parameters
-    float target1 = getRandomAngle();
-    float target2 = getRandomAngle();
-    float target3 = getRandomAngle();
-    uint8_t targetOpacity = getRandomOpacity();
-    float duration = getRandomDuration();
-    EasingType easing = getRandomEasing();
+    float target1, target2, target3;
+    uint8_t targetOpacity;
+    float duration;
+    EasingType easing;
+    bool isNOP = false;
+
+    if (firstTransition) {
+      // First transition after boot: fade in to random angles at full opacity
+      target1 = getRandomAngle();
+      target2 = getRandomAngle();
+      target3 = getRandomAngle();
+      targetOpacity = 255;
+      duration = getRandomDuration();
+      easing = getRandomEasing();
+      firstTransition = false;
+
+      Serial.println("\n=== BOOT: Fading in ===");
+    } else {
+      // Random chance (less than 1 in 5) for NOP state
+      if (random(5) == 0) {
+        // NOP state: all hands at 225°, opacity 50
+        target1 = 225.0;
+        target2 = 225.0;
+        target3 = 225.0;
+        targetOpacity = 50;
+        duration = getRandomDuration();
+        easing = getRandomEasing();
+        isNOP = true;
+
+        Serial.println("\n=== NOP State ===");
+      } else {
+        // Normal random transition at full opacity
+        target1 = getRandomAngle();
+        target2 = getRandomAngle();
+        target3 = getRandomAngle();
+        targetOpacity = 255;
+        duration = getRandomDuration();
+        easing = getRandomEasing();
+      }
+    }
 
     // Start the transition
     startTransition(target1, target2, target3, targetOpacity, duration, easing);
 
-    // Print debug info
-    Serial.println("\n=== New Transition ===");
+    // Print debug info (if not already printed above)
+    if (!firstTransition && !isNOP) {
+      Serial.println("\n=== New Transition ===");
+    }
     Serial.print("Easing: ");
     Serial.println(getEasingName(easing));
     Serial.print("Duration: ");
