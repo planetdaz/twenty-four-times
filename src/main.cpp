@@ -105,15 +105,15 @@ void setup() {
 }
 
 void loop() {
-  // Clear canvas
-  canvas.fillScreen(GC9A01A_BLACK);
+  // Clear canvas with white background (like the simulation)
+  canvas.fillScreen(GC9A01A_WHITE);
 
   // Optional: Draw reference circle to show the max radius
-  canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(0, 0, 64));
+  canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(200, 200, 200));
 
   // Draw the three clock hands
-  // Hand color: dark gray/black (#111 from simulation)
-  uint16_t handColor = tft.color565(17, 17, 17);
+  // Hand color: black (#111 from simulation)
+  uint16_t handColor = GC9A01A_BLACK;
 
   // Draw hands 1 and 2 with normal thickness
   drawHand(CENTER_X, CENTER_Y, hand1Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
@@ -123,7 +123,7 @@ void loop() {
   drawHand(CENTER_X, CENTER_Y, hand3Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
   // Draw center dot
-  canvas.fillCircle(CENTER_X, CENTER_Y, 3, tft.color565(128, 128, 128));
+  canvas.fillCircle(CENTER_X, CENTER_Y, 3, GC9A01A_BLACK);
 
   // Present frame to display
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
