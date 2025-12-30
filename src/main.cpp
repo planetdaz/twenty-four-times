@@ -1,22 +1,13 @@
 #include <Arduino.h>
+#include <TFT_eSPI.h>
 #include <SPI.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_GC9A01A.h>
 
 // Proof of concept: Three rotating clock hands on a 240x240 circular display
 // Based on the twenty-four-times simulation
+// Now using TFT_eSPI for anti-aliased thick lines
 
-// 240x240 RGB565 buffer (~115 KB)
-GFXcanvas16 canvas(240, 240);
-
-// ---- TFT pin names ----
-#define tft_rst  4   // D2 / GPIO4 / pin 3
-#define tft_cs   5   // D3 / GPIO5 / pin 4
-#define tft_dc   6   // D4 / GPIO6 / pin 5
-#define tft_scl  8   // D8 / GPIO8 / pin 9
-#define tft_sda  10  // D10 / GPIO10 / pin 11
-
-Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
+TFT_eSPI tft = TFT_eSPI();
+TFT_eSprite sprite = TFT_eSprite(&tft);
 
 // ---- Display geometry ----
 const int DISPLAY_WIDTH = 240;
@@ -50,45 +41,29 @@ unsigned long fpsFrames = 0;
 
 // ---- Helper functions ----
 
-// Draw a clock hand from center to angle
+// Get coordinates of end of a line, pivot at x,y, length r, angle a
+void getCoord(float x, float y, float *xp, float *yp, float r, float a) {
+  float angleRad = (a - 90.0) * DEG_TO_RAD;
+  *xp = cos(angleRad) * r + x;
+  *yp = sin(angleRad) * r + y;
+}
+
+// Draw a clock hand using TFT_eSPI's drawWideLine for smooth anti-aliased rendering
 // angle: degrees, 0 = up, clockwise positive
 // length: length of hand in pixels
 // thickness: line thickness
 // color: RGB565 color
-void drawHand(int cx, int cy, float angleDeg, float length, float thickness, uint16_t color) {
-  // Convert angle to radians (subtract 90 to make 0 degrees point up)
-  float angleRad = (angleDeg - 90.0) * PI / 180.0;
-
-  // Calculate end point
-  int x2 = cx + cos(angleRad) * length;
-  int y2 = cy + sin(angleRad) * length;
-
-  // Draw thick line by drawing multiple parallel lines
-  // For round cap effect, we'll draw the main line and add circles at the end
-  int halfThickness = (int)(thickness / 2.0);
-
-  // Draw the main line with thickness
-  for (int offset = -halfThickness; offset <= halfThickness; offset++) {
-    // Calculate perpendicular offset
-    float perpAngle = angleRad + PI / 2.0;
-    int cx_offset = cx + cos(perpAngle) * offset;
-    int cy_offset = cy + sin(perpAngle) * offset;
-    int x2_offset = x2 + cos(perpAngle) * offset;
-    int y2_offset = y2 + sin(perpAngle) * offset;
-
-    canvas.drawLine(cx_offset, cy_offset, x2_offset, y2_offset, color);
-  }
-
-  // Draw round caps
-  canvas.fillCircle(cx, cy, halfThickness, color);
-  canvas.fillCircle(x2, y2, halfThickness, color);
+void drawHand(float cx, float cy, float angleDeg, float length, float thickness, uint16_t color) {
+  float x2, y2;
+  getCoord(cx, cy, &x2, &y2, length, angleDeg);
+  sprite.drawWideLine(cx, cy, x2, y2, thickness, color);
 }
 
 void setup() {
   Serial.begin(115200);
   delay(200);
 
-  Serial.println("Twenty-Four Times - Clock Hands Proof of Concept");
+  Serial.println("Twenty-Four Times - Clock Hands Proof of Concept (TFT_eSPI)");
   Serial.print("Max radius: ");
   Serial.print(MAX_RADIUS);
   Serial.println(" pixels");
@@ -96,24 +71,38 @@ void setup() {
   Serial.print(HAND_LENGTH_NORMAL);
   Serial.println(" pixels");
 
-  // ---- SPI ----
-  SPI.begin(tft_scl, -1, tft_sda);
-
   // ---- TFT ----
-  tft.begin();
+  tft.init();
   tft.setRotation(0);
+  tft.fillScreen(TFT_WHITE);
+
+  // ---- Create sprite ----
+  // Use 8-bit color to reduce memory usage (240x240x1 = 57,600 bytes vs 115,200 for 16-bit)
+  sprite.setColorDepth(8);
+  bool spriteCreated = sprite.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+  if (!spriteCreated) {
+    Serial.println("ERROR: Failed to create sprite! Not enough memory.");
+    Serial.print("Free heap: ");
+    Serial.println(ESP.getFreeHeap());
+    while(1) delay(1000);  // Halt
+  }
+
+  Serial.print("Sprite created successfully! Free heap: ");
+  Serial.println(ESP.getFreeHeap());
+  Serial.println("Setup complete!");
 }
 
 void loop() {
-  // Clear canvas with white background (like the simulation)
-  canvas.fillScreen(GC9A01A_WHITE);
+  // Clear sprite with white background (like the simulation)
+  sprite.fillSprite(TFT_WHITE);
 
   // Optional: Draw reference circle to show the max radius
-  //canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(200, 200, 200));
+  // sprite.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, TFT_LIGHTGREY);
 
   // Draw the three clock hands
   // Hand color: black (#111 from simulation)
-  uint16_t handColor = GC9A01A_BLACK;
+  uint16_t handColor = TFT_BLACK;
 
   // Draw hands 1 and 2 with normal thickness
   drawHand(CENTER_X, CENTER_Y, hand1Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
@@ -123,10 +112,10 @@ void loop() {
   drawHand(CENTER_X, CENTER_Y, hand3Angle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
   // Draw center dot
-  //canvas.fillCircle(CENTER_X, CENTER_Y, 3, GC9A01A_BLACK);
+  sprite.fillSmoothCircle(CENTER_X, CENTER_Y, 4, handColor);
 
-  // Present frame to display
-  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+  // Push sprite to display (no flicker!)
+  sprite.pushSprite(0, 0);
 
   // Update hand angles
   hand1Angle += HAND1_SPEED;
