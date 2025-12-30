@@ -67,6 +67,22 @@ struct OpacityState {
 
 OpacityState opacity = {0, 0, 0};  // Start invisible
 
+// ---- Color State (foreground and background) ----
+struct ColorState {
+  uint16_t currentBg;
+  uint16_t targetBg;
+  uint16_t startBg;
+  uint16_t currentFg;
+  uint16_t targetFg;
+  uint16_t startFg;
+};
+
+// Start with black background, white foreground
+ColorState colors = {
+  GC9A01A_BLACK, GC9A01A_BLACK, GC9A01A_BLACK,
+  GC9A01A_WHITE, GC9A01A_WHITE, GC9A01A_WHITE
+};
+
 // ---- Transition State (shared by all hands) ----
 struct TransitionState {
   unsigned long startTime;
@@ -87,12 +103,41 @@ bool firstTransition = true;  // Flag for initial boot transition
 unsigned long fpsLastTime = 0;
 unsigned long fpsFrames = 0;
 
+// ---- Color Palette ----
+// Each palette entry has {background, foreground} with good contrast
+struct ColorPair {
+  uint16_t bg;
+  uint16_t fg;
+  const char* name;
+};
+
+const ColorPair colorPalette[] = {
+  // Classic high contrast
+  {GC9A01A_BLACK, GC9A01A_WHITE, "White on Black"},
+  {GC9A01A_WHITE, GC9A01A_BLACK, "Black on White"},
+
+  // Earthy tones
+  {tft.color565(245, 235, 220), tft.color565(101, 67, 33), "Dark Brown on Cream"},  // Cream bg, dark brown fg
+  {tft.color565(101, 67, 33), tft.color565(245, 235, 220), "Cream on Dark Brown"},  // Dark brown bg, cream fg
+  {tft.color565(47, 79, 79), tft.color565(245, 222, 179), "Wheat on Dark Slate"},   // Dark slate bg, wheat fg
+  {tft.color565(245, 222, 179), tft.color565(47, 79, 79), "Dark Slate on Wheat"},   // Wheat bg, dark slate fg
+  {tft.color565(139, 69, 19), tft.color565(255, 248, 220), "Cornsilk on Saddle Brown"},  // Saddle brown bg, cornsilk fg
+  {tft.color565(34, 49, 63), tft.color565(236, 240, 241), "Light Gray on Navy"},    // Navy bg, light gray fg
+};
+
+const int paletteSize = sizeof(colorPalette) / sizeof(ColorPair);
+
 // ---- Helper Functions ----
 
 // Get a random angle from the allowed set: 0, 90, 180, 270
 float getRandomAngle() {
   const float angles[] = {0.0, 90.0, 180.0, 270.0};
   return angles[random(4)];
+}
+
+// Get a random color pair from the palette
+int getRandomColorPair() {
+  return random(paletteSize);
 }
 
 // Get a random easing type
@@ -198,11 +243,12 @@ float applyEasing(float t, EasingType easing) {
 // ---- Transition Control Functions ----
 
 // Start a transition for all hands (synchronized)
-// All hands transition together with shared opacity
+// All hands transition together with shared opacity and colors
 // durationSeconds: transition duration in seconds
-// easing: easing type to use (for angles; opacity always uses ease-in-out)
+// easing: easing type to use (for angles; opacity and colors always use ease-in-out)
 void startTransition(float target1, float target2, float target3,
                      uint8_t targetOpacity,
+                     uint16_t targetBg, uint16_t targetFg,
                      float durationSeconds, EasingType easing) {
   // Set up transition state
   transition.startTime = millis();
@@ -213,6 +259,12 @@ void startTransition(float target1, float target2, float target3,
   // Set up shared opacity
   opacity.start = opacity.current;
   opacity.target = targetOpacity;
+
+  // Set up color transitions
+  colors.startBg = colors.currentBg;
+  colors.targetBg = targetBg;
+  colors.startFg = colors.currentFg;
+  colors.targetFg = targetFg;
 
   // Set up hand 1
   hand1.startAngle = hand1.currentAngle;
@@ -274,6 +326,34 @@ void updateOpacity(float t) {
   // Interpolate opacity (always uses ease-in-out)
   float opacityT = easeInOut(t);
   opacity.current = opacity.start + (opacity.target - opacity.start) * opacityT;
+}
+
+// Interpolate between two RGB565 colors
+uint16_t lerpColor(uint16_t color1, uint16_t color2, float t) {
+  // Extract RGB components from RGB565
+  uint8_t r1 = (color1 >> 11) & 0x1F;
+  uint8_t g1 = (color1 >> 5) & 0x3F;
+  uint8_t b1 = color1 & 0x1F;
+
+  uint8_t r2 = (color2 >> 11) & 0x1F;
+  uint8_t g2 = (color2 >> 5) & 0x3F;
+  uint8_t b2 = color2 & 0x1F;
+
+  // Interpolate each component
+  uint8_t r = r1 + (r2 - r1) * t;
+  uint8_t g = g1 + (g2 - g1) * t;
+  uint8_t b = b1 + (b2 - b1) * t;
+
+  // Pack back to RGB565
+  return (r << 11) | (g << 5) | b;
+}
+
+// Update colors based on transition state
+void updateColors(float t) {
+  // Interpolate colors (always uses ease-in-out)
+  float colorT = easeInOut(t);
+  colors.currentBg = lerpColor(colors.startBg, colors.targetBg, colorT);
+  colors.currentFg = lerpColor(colors.startFg, colors.targetFg, colorT);
 }
 
 // ---- Helper functions ----
@@ -422,10 +502,12 @@ void setup() {
 
   Serial.println("\n=== Boot Sequence ===");
   Serial.println("Starting with all hands at 0°, opacity 0 (invisible)");
+  Serial.println("Black background, white foreground");
   Serial.println("After 5 seconds: fade in to random angles");
   Serial.println("Then: random transitions every 5 seconds");
   Serial.println("  - Normal: random angles, opacity 255");
-  Serial.println("  - NOP (< 1 in 5): all hands at 225°, opacity 50\n");
+  Serial.println("  - NOP (< 1 in 5): all hands at 225°, opacity 50");
+  Serial.println("  - Color change (1 in 5): random palette with good contrast\n");
 }
 
 void loop() {
@@ -445,6 +527,8 @@ void loop() {
       hand2.currentAngle = hand2.targetAngle;
       hand3.currentAngle = hand3.targetAngle;
       opacity.current = opacity.target;
+      colors.currentBg = colors.targetBg;
+      colors.currentFg = colors.targetFg;
       transition.isActive = false;
 
       // Start the 5-second timer AFTER transition completes
@@ -455,6 +539,7 @@ void loop() {
       updateHandAngle(hand2, t);
       updateHandAngle(hand3, t);
       updateOpacity(t);
+      updateColors(t);
     }
   }
 
@@ -462,9 +547,23 @@ void loop() {
   if (!transition.isActive && (currentTime - lastTransitionTime >= TRANSITION_INTERVAL)) {
     float target1, target2, target3;
     uint8_t targetOpacity;
+    uint16_t targetBg, targetFg;
     float duration;
     EasingType easing;
     bool isNOP = false;
+    bool colorChange = false;
+
+    // Decide if colors should change (1 in 5 chance)
+    if (random(5) == 0) {
+      int paletteIndex = getRandomColorPair();
+      targetBg = colorPalette[paletteIndex].bg;
+      targetFg = colorPalette[paletteIndex].fg;
+      colorChange = true;
+    } else {
+      // Keep current colors
+      targetBg = colors.currentBg;
+      targetFg = colors.currentFg;
+    }
 
     if (firstTransition) {
       // First transition after boot: fade in to random angles at full opacity
@@ -502,7 +601,7 @@ void loop() {
     }
 
     // Start the transition
-    startTransition(target1, target2, target3, targetOpacity, duration, easing);
+    startTransition(target1, target2, target3, targetOpacity, targetBg, targetFg, duration, easing);
 
     // Print debug info (if not already printed above)
     if (!firstTransition && !isNOP) {
@@ -517,6 +616,19 @@ void loop() {
     Serial.print(opacity.start);
     Serial.print(" -> ");
     Serial.println(targetOpacity);
+
+    // Print color change info if colors are changing
+    if (colorChange) {
+      Serial.print("Colors: ");
+      // Find which palette entry this is
+      for (int i = 0; i < paletteSize; i++) {
+        if (colorPalette[i].bg == targetBg && colorPalette[i].fg == targetFg) {
+          Serial.println(colorPalette[i].name);
+          break;
+        }
+      }
+    }
+
     Serial.print("Hand 1: ");
     Serial.print(hand1.startAngle, 0);
     Serial.print("° -> ");
@@ -540,19 +652,15 @@ void loop() {
     Serial.println(")");
   }
 
-  // Clear canvas with white background (like the simulation)
-  uint16_t bgColor = GC9A01A_WHITE;
-  canvas.fillScreen(bgColor);
+  // Clear canvas with current background color
+  canvas.fillScreen(colors.currentBg);
 
   // Optional: Draw reference circle to show the max radius
   // canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(200, 200, 200));
 
   // Draw the three clock hands with opacity blending
-  // Base hand color: black
-  uint16_t baseHandColor = GC9A01A_BLACK;
-
-  // Blend color based on shared opacity
-  uint16_t handColor = blendColor(bgColor, baseHandColor, opacity.current);
+  // Blend foreground color with background based on opacity
+  uint16_t handColor = blendColor(colors.currentBg, colors.currentFg, opacity.current);
 
   // Draw hands 1 and 2 with normal thickness
   drawHand(CENTER_X, CENTER_Y, hand1.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
@@ -561,8 +669,8 @@ void loop() {
   // Draw hand 3 with thin thickness
   drawHand(CENTER_X, CENTER_Y, hand3.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
-  // Draw center dot (always full opacity)
-  canvas.fillCircle(CENTER_X, CENTER_Y, 4, baseHandColor);
+  // Draw center dot (always full opacity foreground color)
+  canvas.fillCircle(CENTER_X, CENTER_Y, 4, colors.currentFg);
 
   // Present frame to display
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
