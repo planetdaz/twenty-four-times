@@ -51,27 +51,39 @@ unsigned long fpsFrames = 0;
 
 // ---- Helper functions ----
 
-// Draw a thick clock hand by drawing filled circles along the line
-// This creates smooth thick lines without gaps
-// Optimized version with fewer steps for better performance
+// Draw a thick clock hand using 2 filled triangles (forming a rectangle) + rounded caps
+// This is more efficient than drawing many circles along the line
 void drawHand(float cx, float cy, float angleDeg, float length, float thickness, uint16_t color) {
   // Convert angle to radians (subtract 90 to make 0 degrees point up)
   float angleRad = (angleDeg - 90.0) * PI / 180.0;
+  float perpRad = angleRad + PI / 2.0;  // Perpendicular angle for width
 
-  // Calculate end point
-  float x2 = cx + cos(angleRad) * length;
-  float y2 = cy + sin(angleRad) * length;
+  float halfThick = thickness / 2.0;
 
-  // Draw thick line using filled circles
-  float radius = thickness / 2.0;
-  int steps = (int)(length / (radius * 0.5));  // Optimized: fewer steps, circles overlap by 50%
+  // Calculate 4 corners of the rectangle
+  // Base corners (at center)
+  float x1 = cx + cos(perpRad) * halfThick;
+  float y1 = cy + sin(perpRad) * halfThick;
+  float x2 = cx - cos(perpRad) * halfThick;
+  float y2 = cy - sin(perpRad) * halfThick;
 
-  for (int i = 0; i <= steps; i++) {
-    float t = (float)i / steps;
-    int x = cx + (x2 - cx) * t;
-    int y = cy + (y2 - cy) * t;
-    canvas.fillCircle(x, y, (int)radius, color);
-  }
+  // End point
+  float endX = cx + cos(angleRad) * length;
+  float endY = cy + sin(angleRad) * length;
+
+  // Tip corners (at end of hand)
+  float x3 = endX + cos(perpRad) * halfThick;
+  float y3 = endY + sin(perpRad) * halfThick;
+  float x4 = endX - cos(perpRad) * halfThick;
+  float y4 = endY - sin(perpRad) * halfThick;
+
+  // Draw two triangles to form rectangle
+  canvas.fillTriangle(x1, y1, x2, y2, x3, y3, color);
+  canvas.fillTriangle(x2, y2, x3, y3, x4, y4, color);
+
+  // Add rounded caps at both ends
+  canvas.fillCircle(cx, cy, (int)halfThick, color);      // Base cap
+  canvas.fillCircle(endX, endY, (int)halfThick, color);  // Tip cap
 }
 
 void setup() {
