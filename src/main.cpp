@@ -1,3 +1,4 @@
+
 #include <Arduino.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
@@ -77,6 +78,43 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
+  // ---- Memory Statistics ----
+  Serial.println("\n========== MEMORY DEBUG INFO ==========");
+  Serial.print("Free heap: ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes");
+  
+  Serial.print("Total heap: ");
+  Serial.print(ESP.getHeapSize());
+  Serial.println(" bytes");
+  
+  Serial.print("Min free heap (since boot): ");
+  Serial.print(ESP.getMinFreeHeap());
+  Serial.println(" bytes");
+  
+  Serial.print("Max alloc heap: ");
+  Serial.print(ESP.getMaxAllocHeap());
+  Serial.println(" bytes");
+  
+  Serial.print("Free PSRAM: ");
+  Serial.print(ESP.getFreePsram());
+  Serial.println(" bytes");
+  
+  Serial.print("Total PSRAM: ");
+  Serial.print(ESP.getPsramSize());
+  Serial.println(" bytes");
+  
+  Serial.print("Chip model: ");
+  Serial.println(ESP.getChipModel());
+  
+  Serial.print("Chip cores: ");
+  Serial.println(ESP.getChipCores());
+  
+  Serial.print("CPU frequency: ");
+  Serial.print(ESP.getCpuFreqMHz());
+  Serial.println(" MHz");
+  Serial.println("=======================================\n");
+
   Serial.println("Twenty-Four Times - Clock Hands Proof of Concept (Adafruit GFX)");
   Serial.print("Max radius: ");
   Serial.print(MAX_RADIUS);
@@ -89,8 +127,15 @@ void setup() {
   SPI.begin(tft_scl, -1, tft_sda);
 
   // ---- TFT ----
+  Serial.println("Initializing TFT...");
   tft.begin();
   tft.setRotation(0);
+  Serial.println("TFT initialized!");
+  
+  // ---- Memory after TFT init ----
+  Serial.print("Free heap after TFT init: ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes");
 
   Serial.println("Setup complete!");
 }
