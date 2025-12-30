@@ -361,8 +361,33 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
 
-  // ---- Random Demo Loop: Start new transition every 5 seconds ----
-  if (currentTime - lastTransitionTime >= TRANSITION_INTERVAL) {
+  // Update hand angles based on transition
+  if (transition.isActive) {
+    // Calculate elapsed time in seconds
+    float elapsed = (currentTime - transition.startTime) / 1000.0;
+
+    // Calculate progress (0.0 to 1.0)
+    float t = elapsed / transition.duration;
+
+    if (t >= 1.0) {
+      // Transition complete
+      hand1.currentAngle = hand1.targetAngle;
+      hand2.currentAngle = hand2.targetAngle;
+      hand3.currentAngle = hand3.targetAngle;
+      transition.isActive = false;
+
+      // Start the 5-second timer AFTER transition completes
+      lastTransitionTime = currentTime;
+    } else {
+      // Update all hands with same progress value
+      updateHandAngle(hand1, t);
+      updateHandAngle(hand2, t);
+      updateHandAngle(hand3, t);
+    }
+  }
+
+  // ---- Random Demo Loop: Start new transition 5 seconds after previous one completes ----
+  if (!transition.isActive && (currentTime - lastTransitionTime >= TRANSITION_INTERVAL)) {
     // Generate random transition parameters
     float target1 = getRandomAngle();
     float target2 = getRandomAngle();
@@ -372,7 +397,6 @@ void loop() {
 
     // Start the transition
     startTransition(target1, target2, target3, duration, easing);
-    lastTransitionTime = currentTime;
 
     // Print debug info
     Serial.println("\n=== New Transition ===");
@@ -402,28 +426,6 @@ void loop() {
     Serial.print("° (");
     Serial.print(hand3.direction > 0 ? "CW" : "CCW");
     Serial.println(")");
-  }
-
-  // Update hand angles based on transition
-  if (transition.isActive) {
-    // Calculate elapsed time in seconds
-    float elapsed = (currentTime - transition.startTime) / 1000.0;
-
-    // Calculate progress (0.0 to 1.0)
-    float t = elapsed / transition.duration;
-
-    if (t >= 1.0) {
-      // Transition complete
-      hand1.currentAngle = hand1.targetAngle;
-      hand2.currentAngle = hand2.targetAngle;
-      hand3.currentAngle = hand3.targetAngle;
-      transition.isActive = false;
-    } else {
-      // Update all hands with same progress value
-      updateHandAngle(hand1, t);
-      updateHandAngle(hand2, t);
-      updateHandAngle(hand3, t);
-    }
   }
 
   // Clear canvas with white background (like the simulation)
