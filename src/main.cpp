@@ -31,8 +31,8 @@ const int MAX_RADIUS = 120;
 // Normal hands: 92% of max radius
 // Thin hand (3rd hand): 80% thickness of normal
 const float HAND_LENGTH_NORMAL = MAX_RADIUS * 0.92;
-const float HAND_THICKNESS_NORMAL = 3.0;
-const float HAND_THICKNESS_THIN = 2.4;  // 80% of normal
+const float HAND_THICKNESS_NORMAL = 12.0;
+const float HAND_THICKNESS_THIN = 9;  // 80% of normal
 
 // Hand angles (in degrees, 0 = up/north, increases clockwise)
 float hand1Angle = 0.0;
@@ -60,28 +60,20 @@ void drawHand(int cx, int cy, float angleDeg, float length, float thickness, uin
   float angleRad = (angleDeg - 90.0) * PI / 180.0;
 
   // Calculate end point
-  int x2 = cx + cos(angleRad) * length;
-  int y2 = cy + sin(angleRad) * length;
+  float x2 = cx + cos(angleRad) * length;
+  float y2 = cy + sin(angleRad) * length;
 
-  // Draw thick line by drawing multiple parallel lines
-  // For round cap effect, we'll draw the main line and add circles at the end
-  int halfThickness = (int)(thickness / 2.0);
+  // Draw thick line by drawing filled circles along the line
+  // This creates a smooth, thick line similar to the simulation
+  float radius = thickness / 2.0;
+  int steps = (int)(length * 2);  // More steps for smoother line
 
-  // Draw the main line with thickness
-  for (int offset = -halfThickness; offset <= halfThickness; offset++) {
-    // Calculate perpendicular offset
-    float perpAngle = angleRad + PI / 2.0;
-    int cx_offset = cx + cos(perpAngle) * offset;
-    int cy_offset = cy + sin(perpAngle) * offset;
-    int x2_offset = x2 + cos(perpAngle) * offset;
-    int y2_offset = y2 + sin(perpAngle) * offset;
-
-    canvas.drawLine(cx_offset, cy_offset, x2_offset, y2_offset, color);
+  for (int i = 0; i <= steps; i++) {
+    float t = (float)i / steps;
+    int x = cx + (x2 - cx) * t;
+    int y = cy + (y2 - cy) * t;
+    canvas.fillCircle(x, y, (int)radius, color);
   }
-
-  // Draw round caps
-  canvas.fillCircle(cx, cy, halfThickness, color);
-  canvas.fillCircle(x2, y2, halfThickness, color);
 }
 
 void setup() {
