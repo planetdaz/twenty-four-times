@@ -192,18 +192,36 @@ void startTransition(float target1, float target2, float target3, float duration
   transition.easing = easing;
   transition.isActive = true;
 
-  // Set up each hand with random direction
+  // Set up hand 1
   hand1.startAngle = hand1.currentAngle;
   hand1.targetAngle = target1;
-  hand1.direction = (random(2) == 0) ? 1 : -1;  // Random CW or CCW
+  // If start == target, do a full 360° rotation in random direction
+  if (abs(hand1.currentAngle - target1) < 0.1) {
+    hand1.direction = (random(2) == 0) ? 1 : -1;  // Random CW or CCW
+    hand1.targetAngle = hand1.currentAngle + (360.0 * hand1.direction);
+  } else {
+    hand1.direction = (random(2) == 0) ? 1 : -1;  // Random CW or CCW
+  }
 
+  // Set up hand 2
   hand2.startAngle = hand2.currentAngle;
   hand2.targetAngle = target2;
-  hand2.direction = (random(2) == 0) ? 1 : -1;
+  if (abs(hand2.currentAngle - target2) < 0.1) {
+    hand2.direction = (random(2) == 0) ? 1 : -1;
+    hand2.targetAngle = hand2.currentAngle + (360.0 * hand2.direction);
+  } else {
+    hand2.direction = (random(2) == 0) ? 1 : -1;
+  }
 
+  // Set up hand 3
   hand3.startAngle = hand3.currentAngle;
   hand3.targetAngle = target3;
-  hand3.direction = (random(2) == 0) ? 1 : -1;
+  if (abs(hand3.currentAngle - target3) < 0.1) {
+    hand3.direction = (random(2) == 0) ? 1 : -1;
+    hand3.targetAngle = hand3.currentAngle + (360.0 * hand3.direction);
+  } else {
+    hand3.direction = (random(2) == 0) ? 1 : -1;
+  }
 }
 
 // Update a hand's angle based on transition state
@@ -211,16 +229,20 @@ void updateHandAngle(HandState &hand, float t) {
   // Apply easing function
   float easedT = applyEasing(t, transition.easing);
 
-  // Calculate angle difference in the chosen direction
+  // Calculate angle difference
   float diff = hand.targetAngle - hand.startAngle;
 
-  // Normalize to 0-360 range
-  while (diff < 0) diff += 360.0;
-  while (diff >= 360.0) diff -= 360.0;
+  // For full 360° rotations, diff is already set correctly (±360)
+  // For normal transitions, normalize and apply direction
+  if (abs(diff) < 359.0) {  // Not a full rotation
+    // Normalize to 0-360 range
+    while (diff < 0) diff += 360.0;
+    while (diff >= 360.0) diff -= 360.0;
 
-  // If going CCW, take the longer path
-  if (hand.direction < 0) {
-    diff = diff - 360.0;  // Go the other way
+    // If going CCW, take the longer path
+    if (hand.direction < 0) {
+      diff = diff - 360.0;  // Go the other way
+    }
   }
 
   // Interpolate
