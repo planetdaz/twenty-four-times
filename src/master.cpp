@@ -521,8 +521,6 @@ void setup() {
 
   // Initialize ESP-NOW in sender mode
   if (ESPNowComm::initSender(ESPNOW_CHANNEL)) {
-    Serial.println("ESP-NOW sender initialized!");
-    Serial.println("Broadcasting test patterns every 5 seconds...\n");
 
     tft.fillScreen(COLOR_BG);
     tft.setTextColor(COLOR_ACCENT, COLOR_BG);
