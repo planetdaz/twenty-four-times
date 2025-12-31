@@ -1,11 +1,17 @@
-
 #include <Arduino.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_GC9A01A.h>
+#include <ESPNowComm.h>
 
 // Proof of concept: Three rotating clock hands on a 240x240 circular display
 // Based on the twenty-four-times simulation
+// Now with ESP-NOW communication for synchronized multi-pixel operation
+
+// ===== PIXEL CONFIGURATION =====
+// This pixel's ID (0-23). In production, this would be stored in NVS.
+// For now, we'll set it via serial command or hardcode different values per device.
+#define PIXEL_ID 2  // Change this for each device (0, 1, 2, etc.)
 
 // 240x240 RGB565 buffer (~115 KB)
 GFXcanvas16 canvas(240, 240);
@@ -36,15 +42,7 @@ const float HAND_THICKNESS_NORMAL = 13.0;
 const float HAND_THICKNESS_THIN = 9;  // 80% of normal
 
 // ---- Transition/Easing Types ----
-enum EasingType {
-  EASING_LINEAR = 0,
-  EASING_EASE_IN_OUT = 1,
-  EASING_ELASTIC = 2,
-  EASING_BOUNCE = 3,
-  EASING_BACK_IN = 4,
-  EASING_BACK_OUT = 5,
-  EASING_BACK_IN_OUT = 6
-};
+// Use TransitionType from ESPNowComm.h (shared between master and pixels)
 
 // ---- Hand State ----
 struct HandState {
@@ -87,17 +85,20 @@ ColorState colors = {
 struct TransitionState {
   unsigned long startTime;
   float duration;  // in seconds
-  EasingType easing;
+  TransitionType easing;
   bool isActive;
 };
 
-TransitionState transition = {0, 0.0, EASING_ELASTIC, false};
+TransitionState transition = {0, 0.0, TRANSITION_ELASTIC, false};
 
 // Timing
 unsigned long lastUpdateTime = 0;
-unsigned long lastTransitionTime = 0;
-const unsigned long TRANSITION_INTERVAL = 5000;  // 5 seconds between transitions
-bool firstTransition = true;  // Flag for initial boot transition
+
+// ===== ESP-NOW STATE =====
+bool espnowEnabled = false;  // Set to true when ESP-NOW is initialized
+bool errorState = false;     // If true, display error screen (red bg with "!")
+unsigned long lastPacketTime = 0;
+const unsigned long PACKET_TIMEOUT = 10000;  // 10 seconds without packet = show error
 
 // FPS tracking
 unsigned long fpsLastTime = 0;
@@ -139,52 +140,10 @@ const int paletteSize = sizeof(colorPalette) / sizeof(ColorPair);
 
 // ---- Helper Functions ----
 
-// Get a random angle from the allowed set: 0, 90, 180, 270
-float getRandomAngle() {
-  const float angles[] = {0.0, 90.0, 180.0, 270.0};
-  return angles[random(4)];
-}
-
-// Get a random color pair from the palette
-int getRandomColorPair() {
-  return random(paletteSize);
-}
-
-// Get a random easing type
-EasingType getRandomEasing() {
-  return (EasingType)random(7);  // 0-6 for the 7 easing types
-}
-
-// Get a random duration (0.5 to 9.0 seconds) with weighted distribution
-// Favors longer durations - most animations look better when slower
-float getRandomDuration() {
-  // Weighted random: higher numbers = longer durations more likely
-  // Using triangular distribution: pick 2 random numbers, use the max
-  // This biases toward higher values (longer durations)
-  float r1 = random(851) / 100.0;  // 0.0 to 8.5
-  float r2 = random(851) / 100.0;  // 0.0 to 8.5
-  float duration = max(r1, r2) + 0.5;  // 0.5 to 9.0 seconds, biased toward longer
-  return duration;
-}
-
-// Get a random opacity from allowed set: 0 (transparent), 50 (faint), 255 (opaque)
-uint8_t getRandomOpacity() {
-  const uint8_t opacities[] = {0, 50, 255};
-  return opacities[random(3)];
-}
-
-// Get easing name for debug output
-const char* getEasingName(EasingType easing) {
-  switch (easing) {
-    case EASING_LINEAR: return "Linear";
-    case EASING_EASE_IN_OUT: return "Ease-in-out";
-    case EASING_ELASTIC: return "Elastic";
-    case EASING_BOUNCE: return "Bounce";
-    case EASING_BACK_IN: return "Back-in";
-    case EASING_BACK_OUT: return "Back-out";
-    case EASING_BACK_IN_OUT: return "Back-in-out";
-    default: return "Unknown";
-  }
+// Get easing name for debug output (use library function)
+// This is just a wrapper for compatibility
+const char* getEasingName(TransitionType easing) {
+  return getTransitionName(easing);
 }
 
 // ---- Easing Functions ----
@@ -244,15 +203,16 @@ float easeBackInOut(float t) {
 }
 
 // Apply the current easing function
-float applyEasing(float t, EasingType easing) {
+float applyEasing(float t, TransitionType easing) {
   switch (easing) {
-    case EASING_LINEAR: return easeLinear(t);
-    case EASING_EASE_IN_OUT: return easeInOut(t);
-    case EASING_ELASTIC: return easeElasticOut(t);
-    case EASING_BOUNCE: return easeBounceOut(t);
-    case EASING_BACK_IN: return easeBackIn(t);
-    case EASING_BACK_OUT: return easeBackOut(t);
-    case EASING_BACK_IN_OUT: return easeBackInOut(t);
+    case TRANSITION_LINEAR: return easeLinear(t);
+    case TRANSITION_EASE_IN_OUT: return easeInOut(t);
+    case TRANSITION_ELASTIC: return easeElasticOut(t);
+    case TRANSITION_BOUNCE: return easeBounceOut(t);
+    case TRANSITION_BACK_IN: return easeBackIn(t);
+    case TRANSITION_BACK_OUT: return easeBackOut(t);
+    case TRANSITION_BACK_IN_OUT: return easeBackInOut(t);
+    case TRANSITION_INSTANT: return 1.0;  // Jump immediately to target
     default: return t;
   }
 }
@@ -266,7 +226,8 @@ float applyEasing(float t, EasingType easing) {
 void startTransition(float target1, float target2, float target3,
                      uint8_t targetOpacity,
                      uint16_t targetBg, uint16_t targetFg,
-                     float durationSeconds, EasingType easing) {
+                     float durationSeconds, TransitionType easing,
+                     int8_t dir1, int8_t dir2, int8_t dir3) {
   // Set up transition state
   transition.startTime = millis();
   transition.duration = durationSeconds;
@@ -283,28 +244,45 @@ void startTransition(float target1, float target2, float target3,
   colors.startFg = colors.currentFg;
   colors.targetFg = targetFg;
 
+  // Normalize current angles to 0-360 range before starting new transition
+  while (hand1.currentAngle < 0) hand1.currentAngle += 360.0;
+  while (hand1.currentAngle >= 360.0) hand1.currentAngle -= 360.0;
+  while (hand2.currentAngle < 0) hand2.currentAngle += 360.0;
+  while (hand2.currentAngle >= 360.0) hand2.currentAngle -= 360.0;
+  while (hand3.currentAngle < 0) hand3.currentAngle += 360.0;
+  while (hand3.currentAngle >= 360.0) hand3.currentAngle -= 360.0;
+
   // Set up hand 1
   hand1.startAngle = hand1.currentAngle;
   hand1.targetAngle = target1;
-  hand1.direction = (random(2) == 0) ? 1 : -1;  // Random CW or CCW
-  // If start == target, do a full 360° rotation in the chosen direction
-  if (abs(hand1.currentAngle - target1) < 0.1) {
+  hand1.direction = dir1;
+  // If start == target (accounting for 360° wrap), do a full 360° rotation
+  float diff1 = hand1.currentAngle - target1;
+  while (diff1 > 180.0) diff1 -= 360.0;
+  while (diff1 < -180.0) diff1 += 360.0;
+  if (abs(diff1) < 0.1) {
     hand1.targetAngle = hand1.currentAngle + (360.0 * hand1.direction);
   }
 
   // Set up hand 2
   hand2.startAngle = hand2.currentAngle;
   hand2.targetAngle = target2;
-  hand2.direction = (random(2) == 0) ? 1 : -1;
-  if (abs(hand2.currentAngle - target2) < 0.1) {
+  hand2.direction = dir2;
+  float diff2 = hand2.currentAngle - target2;
+  while (diff2 > 180.0) diff2 -= 360.0;
+  while (diff2 < -180.0) diff2 += 360.0;
+  if (abs(diff2) < 0.1) {
     hand2.targetAngle = hand2.currentAngle + (360.0 * hand2.direction);
   }
 
   // Set up hand 3
   hand3.startAngle = hand3.currentAngle;
   hand3.targetAngle = target3;
-  hand3.direction = (random(2) == 0) ? 1 : -1;
-  if (abs(hand3.currentAngle - target3) < 0.1) {
+  hand3.direction = dir3;
+  float diff3 = hand3.currentAngle - target3;
+  while (diff3 > 180.0) diff3 -= 360.0;
+  while (diff3 < -180.0) diff3 += 360.0;
+  if (abs(diff3) < 0.1) {
     hand3.targetAngle = hand3.currentAngle + (360.0 * hand3.direction);
   }
 }
@@ -318,15 +296,20 @@ void updateHandAngle(HandState &hand, float t) {
   float diff = hand.targetAngle - hand.startAngle;
 
   // For full 360° rotations, diff is already set correctly (±360)
-  // For normal transitions, normalize and apply direction
+  // For normal transitions, apply direction consistently
   if (abs(diff) < 359.0) {  // Not a full rotation
-    // Normalize to 0-360 range
+    // Normalize diff to 0-360 range first
     while (diff < 0) diff += 360.0;
     while (diff >= 360.0) diff -= 360.0;
 
-    // If going CCW, take the longer path
-    if (hand.direction < 0) {
-      diff = diff - 360.0;  // Go the other way
+    // Now apply the specified direction
+    if (hand.direction > 0) {
+      // Clockwise (positive direction): keep diff as-is (0-360)
+      // This means we always rotate CW by the calculated amount
+    } else {
+      // Counter-clockwise (negative direction): go the other way
+      // If diff is 90, we want to go -270 (CCW 270°)
+      diff = diff - 360.0;
     }
   }
 
@@ -397,6 +380,168 @@ uint16_t blendColor(uint16_t bgColor, uint16_t fgColor, uint8_t opacity) {
 
   // Pack back to RGB565
   return (outR << 11) | (outG << 5) | outB;
+}
+
+// ---- Identify Mode State ----
+bool identifyMode = false;  // If true, show pixel ID on screen
+
+// ---- ESP-NOW Packet Handler ----
+
+// Called when an ESP-NOW packet is received
+void onPacketReceived(const ESPNowPacket* packet, size_t len) {
+  lastPacketTime = millis();
+
+  // Clear error state when we receive a packet
+  if (errorState) {
+    errorState = false;
+    Serial.println("ESP-NOW: Connection restored!");
+  }
+
+  // Handle different command types
+  switch (packet->command) {
+    case CMD_SET_ANGLES: {
+      const AngleCommandPacket& cmd = packet->angleCmd;
+
+      // Exit identify mode when we receive a new command
+      identifyMode = false;
+
+      // Extract angles for this pixel
+      float target1, target2, target3;
+      cmd.getPixelAngles(PIXEL_ID, target1, target2, target3);
+
+      // Extract directions for this pixel
+      RotationDirection dir1, dir2, dir3;
+      cmd.getPixelDirections(PIXEL_ID, dir1, dir2, dir3);
+
+      // Extract color and opacity for this pixel
+      uint8_t colorIndex = cmd.colorIndices[PIXEL_ID];
+      uint8_t targetOpacity = cmd.opacities[PIXEL_ID];
+
+      // Get transition type directly (no mapping needed - they're the same now!)
+      TransitionType easing = cmd.transition;
+
+      // Convert duration from compact format to seconds
+      float durationSec = durationToFloat(cmd.duration);
+
+      // Get colors from palette
+      uint16_t targetBg, targetFg;
+      if (colorIndex < paletteSize) {
+        targetBg = colorPalette[colorIndex].bg;
+        targetFg = colorPalette[colorIndex].fg;
+      } else {
+        // Invalid index, use current colors
+        targetBg = colors.currentBg;
+        targetFg = colors.currentFg;
+      }
+
+      // Convert rotation directions to int8_t for startTransition
+      // DIR_SHORTEST (0) = choose shortest path based on angle difference
+      // DIR_CW (1) = clockwise (1)
+      // DIR_CCW (2) = counter-clockwise (-1)
+      int8_t direction1, direction2, direction3;
+
+      if (dir1 == DIR_SHORTEST) {
+        // Choose shortest path
+        float diff = target1 - hand1.currentAngle;
+        while (diff > 180.0) diff -= 360.0;
+        while (diff < -180.0) diff += 360.0;
+        direction1 = (diff >= 0) ? 1 : -1;
+      } else {
+        direction1 = (dir1 == DIR_CW) ? 1 : -1;
+      }
+
+      if (dir2 == DIR_SHORTEST) {
+        float diff = target2 - hand2.currentAngle;
+        while (diff > 180.0) diff -= 360.0;
+        while (diff < -180.0) diff += 360.0;
+        direction2 = (diff >= 0) ? 1 : -1;
+      } else {
+        direction2 = (dir2 == DIR_CW) ? 1 : -1;
+      }
+
+      if (dir3 == DIR_SHORTEST) {
+        float diff = target3 - hand3.currentAngle;
+        while (diff > 180.0) diff -= 360.0;
+        while (diff < -180.0) diff += 360.0;
+        direction3 = (diff >= 0) ? 1 : -1;
+      } else {
+        direction3 = (dir3 == DIR_CW) ? 1 : -1;
+      }
+
+      // Debug output
+      Serial.print("Pixel ");
+      Serial.print(PIXEL_ID);
+      Serial.print(": Targets=(");
+      Serial.print(target1, 0);
+      Serial.print(",");
+      Serial.print(target2, 0);
+      Serial.print(",");
+      Serial.print(target3, 0);
+      Serial.print(") Dirs=(");
+      Serial.print(dir1);
+      Serial.print(",");
+      Serial.print(dir2);
+      Serial.print(",");
+      Serial.print(dir3);
+      Serial.print(") -> (");
+      Serial.print(direction1);
+      Serial.print(",");
+      Serial.print(direction2);
+      Serial.print(",");
+      Serial.print(direction3);
+      Serial.print(") Current=(");
+      Serial.print(hand1.currentAngle, 0);
+      Serial.print(",");
+      Serial.print(hand2.currentAngle, 0);
+      Serial.print(",");
+      Serial.print(hand3.currentAngle, 0);
+      Serial.println(")");
+
+      // Start the transition with specified directions
+      startTransition(target1, target2, target3, targetOpacity, targetBg, targetFg, durationSec, easing,
+                      direction1, direction2, direction3);
+
+      Serial.print("ESP-NOW: Angles [");
+      Serial.print(target1, 0);
+      Serial.print("°, ");
+      Serial.print(target2, 0);
+      Serial.print("°, ");
+      Serial.print(target3, 0);
+      Serial.print("°] dur=");
+      Serial.print(durationSec, 2);
+      Serial.print("s ease=");
+      Serial.print(getEasingName(easing));
+      Serial.print(" color=");
+      Serial.print(colorIndex);
+      Serial.print(" opacity=");
+      Serial.println(targetOpacity);
+      break;
+    }
+
+    case CMD_IDENTIFY: {
+      const IdentifyPacket& cmd = packet->identify;
+      // Check if this command is for us (or for all pixels)
+      if (cmd.pixelId == PIXEL_ID || cmd.pixelId == 255) {
+        identifyMode = true;
+        Serial.print("ESP-NOW: Identify mode activated for pixel ");
+        Serial.println(PIXEL_ID);
+      }
+      break;
+    }
+
+    case CMD_PING:
+      Serial.println("ESP-NOW: Ping received");
+      break;
+
+    case CMD_RESET:
+      Serial.println("ESP-NOW: Reset command received");
+      // Could reset to default state here
+      break;
+
+    default:
+      Serial.print("ESP-NOW: Unknown command: ");
+      Serial.println(packet->command);
+  }
 }
 
 // Draw a thick clock hand using 2 filled triangles (forming a rectangle) + rounded caps
@@ -512,23 +657,78 @@ void setup() {
 
   // Initialize timing
   lastUpdateTime = millis();
-  lastTransitionTime = millis();
 
-  // Initialize random seed
-  randomSeed(analogRead(0));
+  // ---- ESP-NOW ----
+  Serial.println("\n========== ESP-NOW INIT ==========");
+  Serial.print("Pixel ID: ");
+  Serial.println(PIXEL_ID);
 
-  Serial.println("\n=== Boot Sequence ===");
-  Serial.println("Starting with all hands at 0°, opacity 0 (invisible)");
-  Serial.println("Black background, white foreground");
-  Serial.println("After 5 seconds: fade in to random angles");
-  Serial.println("Then: random transitions every 5 seconds");
-  Serial.println("  - Normal: random angles, opacity 255");
-  Serial.println("  - NOP (< 1 in 5): all hands at 225°, opacity 50");
-  Serial.println("  - Color change (1 in 5): random palette with good contrast\n");
+  if (ESPNowComm::initReceiver(ESPNOW_CHANNEL)) {
+    ESPNowComm::setReceiveCallback(onPacketReceived);
+    espnowEnabled = true;
+    lastPacketTime = millis();  // Initialize packet time to avoid immediate error
+    Serial.println("ESP-NOW initialized successfully!");
+    Serial.println("Mode: Waiting for master commands");
+    Serial.println("Will show error screen if no commands received within 10s");
+  } else {
+    Serial.println("ESP-NOW initialization failed!");
+    Serial.println("ERROR: Cannot operate without ESP-NOW");
+    errorState = true;  // Show error immediately
+  }
+  Serial.println("==================================\n");
 }
 
 void loop() {
   unsigned long currentTime = millis();
+
+  // ---- ESP-NOW Timeout Check ----
+  // If we haven't received a packet in PACKET_TIMEOUT ms, show error state
+  if (espnowEnabled && !errorState && (currentTime - lastPacketTime > PACKET_TIMEOUT)) {
+    Serial.println("\n!!! ESP-NOW TIMEOUT - NO MASTER SIGNAL !!!\n");
+    errorState = true;
+  }
+
+  // ---- Identify Mode Display ----
+  // If in identify mode, show pixel ID and skip normal rendering
+  if (identifyMode) {
+    canvas.fillScreen(GC9A01A_BLUE);
+
+    // Draw large pixel ID in the center
+    canvas.setTextColor(GC9A01A_WHITE);
+    canvas.setTextSize(15);  // Very large text
+
+    // Center the text (approximate positioning for single/double digit)
+    int xPos = (PIXEL_ID < 10) ? 85 : 55;
+    canvas.setCursor(xPos, 90);
+    canvas.print(PIXEL_ID);
+
+    // Present identify frame to display
+    tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    // Small delay and return (skip normal rendering)
+    delay(100);
+    return;
+  }
+
+  // ---- Error State Display ----
+  // If in error state, just show red screen with "!" and skip normal rendering
+  if (errorState) {
+    canvas.fillScreen(GC9A01A_RED);
+
+    // Draw large "!" in the center
+    // We'll draw it manually since we want it large and centered
+    canvas.setTextColor(GC9A01A_WHITE);
+    canvas.setTextSize(10);  // Large text
+    canvas.setCursor(95, 90);  // Roughly centered for "!"
+    canvas.print("!");
+
+    // Present error frame to display
+    tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    // Small delay and return (skip normal rendering)
+    delay(100);
+    return;
+  }
 
   // Update hand angles based on transition
   if (transition.isActive) {
@@ -539,17 +739,23 @@ void loop() {
     float t = elapsed / transition.duration;
 
     if (t >= 1.0) {
-      // Transition complete
+      // Transition complete - set to target and normalize
       hand1.currentAngle = hand1.targetAngle;
       hand2.currentAngle = hand2.targetAngle;
       hand3.currentAngle = hand3.targetAngle;
+
+      // Normalize angles to 0-360 range
+      while (hand1.currentAngle < 0) hand1.currentAngle += 360.0;
+      while (hand1.currentAngle >= 360.0) hand1.currentAngle -= 360.0;
+      while (hand2.currentAngle < 0) hand2.currentAngle += 360.0;
+      while (hand2.currentAngle >= 360.0) hand2.currentAngle -= 360.0;
+      while (hand3.currentAngle < 0) hand3.currentAngle += 360.0;
+      while (hand3.currentAngle >= 360.0) hand3.currentAngle -= 360.0;
+
       opacity.current = opacity.target;
       colors.currentBg = colors.targetBg;
       colors.currentFg = colors.targetFg;
       transition.isActive = false;
-
-      // Start the 5-second timer AFTER transition completes
-      lastTransitionTime = currentTime;
     } else {
       // Update all hands with same progress value
       updateHandAngle(hand1, t);
@@ -560,115 +766,7 @@ void loop() {
     }
   }
 
-  // ---- Random Demo Loop: Start new transition 5 seconds after previous one completes ----
-  if (!transition.isActive && (currentTime - lastTransitionTime >= TRANSITION_INTERVAL)) {
-    float target1, target2, target3;
-    uint8_t targetOpacity;
-    uint16_t targetBg, targetFg;
-    float duration;
-    EasingType easing;
-    bool isNOP = false;
-    bool colorChange = false;
-
-    // Decide if colors should change (1 in 5 chance)
-    if (random(5) == 0) {
-      int paletteIndex = getRandomColorPair();
-      targetBg = colorPalette[paletteIndex].bg;
-      targetFg = colorPalette[paletteIndex].fg;
-      colorChange = true;
-    } else {
-      // Keep current colors
-      targetBg = colors.currentBg;
-      targetFg = colors.currentFg;
-    }
-
-    if (firstTransition) {
-      // First transition after boot: fade in to random angles at full opacity
-      target1 = getRandomAngle();
-      target2 = getRandomAngle();
-      target3 = getRandomAngle();
-      targetOpacity = 255;
-      duration = getRandomDuration();
-      easing = getRandomEasing();
-      firstTransition = false;
-
-      Serial.println("\n=== BOOT: Fading in ===");
-    } else {
-      // Random chance (less than 1 in 5) for NOP state
-      if (random(5) == 0) {
-        // NOP state: all hands at 225°, opacity 50
-        target1 = 225.0;
-        target2 = 225.0;
-        target3 = 225.0;
-        targetOpacity = 50;
-        duration = getRandomDuration();
-        easing = getRandomEasing();
-        isNOP = true;
-
-        Serial.println("\n=== NOP State ===");
-      } else {
-        // Normal random transition at full opacity
-        target1 = getRandomAngle();
-        target2 = getRandomAngle();
-        target3 = getRandomAngle();
-        targetOpacity = 255;
-        duration = getRandomDuration();
-        easing = getRandomEasing();
-      }
-    }
-
-    // Start the transition
-    startTransition(target1, target2, target3, targetOpacity, targetBg, targetFg, duration, easing);
-
-    // Print debug info (if not already printed above)
-    if (!firstTransition && !isNOP) {
-      Serial.println("\n=== New Transition ===");
-    }
-    Serial.print("Easing: ");
-    Serial.println(getEasingName(easing));
-    Serial.print("Duration: ");
-    Serial.print(duration, 2);
-    Serial.println(" seconds");
-    Serial.print("Opacity: ");
-    Serial.print(opacity.start);
-    Serial.print(" -> ");
-    Serial.println(targetOpacity);
-
-    // Print color change info if colors are changing
-    if (colorChange) {
-      Serial.print("Colors: ");
-      // Find which palette entry this is
-      for (int i = 0; i < paletteSize; i++) {
-        if (colorPalette[i].bg == targetBg && colorPalette[i].fg == targetFg) {
-          Serial.println(colorPalette[i].name);
-          break;
-        }
-      }
-    }
-
-    Serial.print("Hand 1: ");
-    Serial.print(hand1.startAngle, 0);
-    Serial.print("° -> ");
-    Serial.print(target1, 0);
-    Serial.print("° (");
-    Serial.print(hand1.direction > 0 ? "CW" : "CCW");
-    Serial.println(")");
-    Serial.print("Hand 2: ");
-    Serial.print(hand2.startAngle, 0);
-    Serial.print("° -> ");
-    Serial.print(target2, 0);
-    Serial.print("° (");
-    Serial.print(hand2.direction > 0 ? "CW" : "CCW");
-    Serial.println(")");
-    Serial.print("Hand 3: ");
-    Serial.print(hand3.startAngle, 0);
-    Serial.print("° -> ");
-    Serial.print(target3, 0);
-    Serial.print("° (");
-    Serial.print(hand3.direction > 0 ? "CW" : "CCW");
-    Serial.println(")");
-  }
-
+  // ---- Rendering ----
   // Clear canvas with current background color
   canvas.fillScreen(colors.currentBg);
 
