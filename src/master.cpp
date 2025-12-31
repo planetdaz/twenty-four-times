@@ -303,16 +303,23 @@ void sendRandomPattern() {
   packet.angleCmd.transition = getRandomTransition();
   packet.angleCmd.duration = floatToDuration(getRandomDuration());
 
-  // Set random angles, directions, colors, and opacity for all pixels
+  // Generate random values ONCE for all pixels (synchronized movement)
+  float angle1 = getRandomAngle();
+  float angle2 = getRandomAngle();
+  float angle3 = getRandomAngle();
+
+  // Random directions for choreographic control (all pixels move in unison)
+  RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+  RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+  RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+
+  uint8_t colorIndex = getRandomColorIndex();
+  uint8_t opacity = getRandomOpacity();
+
+  // Apply same values to all pixels for synchronized movement
   for (int i = 0; i < MAX_PIXELS; i++) {
-    float angle1 = getRandomAngle();
-    float angle2 = getRandomAngle();
-    float angle3 = getRandomAngle();
-
-    packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3,
-                                    DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
-
-    packet.angleCmd.setPixelStyle(i, getRandomColorIndex(), getRandomOpacity());
+    packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3, dir1, dir2, dir3);
+    packet.angleCmd.setPixelStyle(i, colorIndex, opacity);
   }
 
   // Send the packet
@@ -343,8 +350,8 @@ void sendRandomPattern() {
 
     tft.setCursor(10, 75);
     tft.setTextColor(COLOR_ACCENT, COLOR_BG);
-    tft.println("Random angles, colors, opacity");
-    tft.println("Broadcasting to 24 pixels...");
+    tft.println("All pixels move in unison");
+    tft.println("Random angles & directions");
 
     tft.setCursor(10, 110);
     tft.setTextColor(TFT_YELLOW, COLOR_BG);
