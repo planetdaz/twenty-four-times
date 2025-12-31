@@ -43,15 +43,18 @@ ControlMode currentMode = MODE_MENU;
 
 // Timing
 unsigned long lastCommandTime = 0;
+unsigned long lastPingTime = 0;
 unsigned long modeStartTime = 0;
 const unsigned long SIMULATION_INTERVAL = 5000;  // 5 seconds between random patterns
 const unsigned long PATTERN_INTERVAL = 5000;     // 5 seconds between test patterns
 const unsigned long IDENTIFY_DURATION = 5000;    // Identify phase duration
+const unsigned long PING_INTERVAL = 5000;        // 5 seconds between pings in manual mode
 
 // Manual mode state
 struct ManualState {
   uint8_t selectedPixel = 0;     // Currently selected pixel (0-23)
   float angles[3] = {0, 0, 0};   // Angles for the 3 hands
+  RotationDirection directions[3] = {DIR_CW, DIR_CW, DIR_CW};  // Direction for each hand
   uint8_t colorIndex = 0;        // Color palette index
   uint8_t opacity = 255;         // Opacity (0-255)
   TransitionType transition = TRANSITION_LINEAR;
@@ -169,6 +172,7 @@ const int numPatterns = 5;
 void drawManualScreen();
 void handleManualTouch(uint16_t x, uint16_t y);
 void sendManualCommand(bool allPixels);
+void sendPing();
 
 // ===== FUNCTIONS =====
 
@@ -551,7 +555,7 @@ void drawManualScreen() {
     tft.printf("%3.0f", manualState.angles[i]);
     tft.print((char)247);  // Degree symbol
 
-    // -/+ buttons
+    // -/+ buttons for angle
     tft.fillRoundRect(100, y - 2, 25, 16, 4, TFT_DARKGREY);
     tft.fillRoundRect(130, y - 2, 25, 16, 4, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
@@ -559,49 +563,57 @@ void drawManualScreen() {
     tft.print("-");
     tft.setCursor(138, y);
     tft.print("+");
+
+    // Direction toggle button (CW/CCW)
+    uint16_t dirColor = (manualState.directions[i] == DIR_CW) ? TFT_ORANGE : TFT_PURPLE;
+    tft.fillRoundRect(5, y + 15, 150, 12, 3, dirColor);
+    tft.setTextColor(TFT_WHITE, dirColor);
+    tft.setTextSize(1);
+    tft.setCursor(10, y + 16);
+    tft.print(manualState.directions[i] == DIR_CW ? "Clockwise (CW)" : "Counter-CW (CCW)");
   }
 
   // Color selector
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(5, 145);
+  tft.setCursor(5, 165);
   tft.print("Color:");
-  tft.fillRoundRect(50, 143, 30, 16, 4, TFT_DARKGREY);
-  tft.fillRoundRect(85, 143, 30, 16, 4, TFT_DARKGREY);
+  tft.fillRoundRect(50, 163, 30, 16, 4, TFT_DARKGREY);
+  tft.fillRoundRect(85, 163, 30, 16, 4, TFT_DARKGREY);
   tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-  tft.setCursor(58, 145);
+  tft.setCursor(58, 165);
   tft.print("<");
-  tft.setCursor(93, 145);
+  tft.setCursor(93, 165);
   tft.print(">");
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(120, 145);
+  tft.setCursor(120, 165);
   tft.print(manualState.colorIndex);
 
   // Opacity selector
-  tft.setCursor(5, 165);
+  tft.setCursor(5, 185);
   tft.print("Opacity:");
-  tft.fillRoundRect(60, 163, 30, 16, 4, TFT_DARKGREY);
-  tft.fillRoundRect(95, 163, 30, 16, 4, TFT_DARKGREY);
+  tft.fillRoundRect(60, 183, 30, 16, 4, TFT_DARKGREY);
+  tft.fillRoundRect(95, 183, 30, 16, 4, TFT_DARKGREY);
   tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-  tft.setCursor(68, 165);
+  tft.setCursor(68, 185);
   tft.print("-");
-  tft.setCursor(103, 165);
+  tft.setCursor(103, 185);
   tft.print("+");
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(130, 165);
+  tft.setCursor(130, 185);
   tft.print(manualState.opacity);
 
   // Duration selector
-  tft.setCursor(5, 185);
+  tft.setCursor(5, 205);
   tft.print("Duration:");
-  tft.fillRoundRect(70, 183, 30, 16, 4, TFT_DARKGREY);
-  tft.fillRoundRect(105, 183, 30, 16, 4, TFT_DARKGREY);
+  tft.fillRoundRect(70, 203, 30, 16, 4, TFT_DARKGREY);
+  tft.fillRoundRect(105, 203, 30, 16, 4, TFT_DARKGREY);
   tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-  tft.setCursor(78, 185);
+  tft.setCursor(78, 205);
   tft.print("-");
-  tft.setCursor(113, 185);
+  tft.setCursor(113, 205);
   tft.print("+");
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(140, 185);
+  tft.setCursor(140, 205);
   tft.printf("%.1fs", manualState.duration);
 
   // Send button (large, prominent)
@@ -648,6 +660,7 @@ void handleManualTouch(uint16_t x, uint16_t y) {
   // Angle controls (3 rows at y=55, 85, 115)
   for (int i = 0; i < 3; i++) {
     int y_base = 55 + i * 30;
+    // Angle +/- buttons
     if (y >= y_base - 2 && y <= y_base + 14) {
       // Minus button (100, y-2, 25, 16)
       if (x >= 100 && x <= 125) {
@@ -662,10 +675,17 @@ void handleManualTouch(uint16_t x, uint16_t y) {
         needsRedraw = true;
       }
     }
+    // Direction toggle button (5, y+15, 150, 12)
+    if (y >= y_base + 15 && y <= y_base + 27) {
+      if (x >= 5 && x <= 155) {
+        manualState.directions[i] = (manualState.directions[i] == DIR_CW) ? DIR_CCW : DIR_CW;
+        needsRedraw = true;
+      }
+    }
   }
 
-  // Color prev/next (50, 143, 30, 16) and (85, 143, 30, 16)
-  if (y >= 143 && y <= 159) {
+  // Color prev/next (50, 163, 30, 16) and (85, 163, 30, 16)
+  if (y >= 163 && y <= 179) {
     if (x >= 50 && x <= 80) {
       manualState.colorIndex = (manualState.colorIndex == 0) ? (COLOR_PALETTE_SIZE - 1) : manualState.colorIndex - 1;
       needsRedraw = true;
@@ -675,8 +695,8 @@ void handleManualTouch(uint16_t x, uint16_t y) {
     }
   }
 
-  // Opacity -/+ (60, 163, 30, 16) and (95, 163, 30, 16)
-  if (y >= 163 && y <= 179) {
+  // Opacity -/+ (60, 183, 30, 16) and (95, 183, 30, 16)
+  if (y >= 183 && y <= 199) {
     if (x >= 60 && x <= 90) {
       if (manualState.opacity >= 25) manualState.opacity -= 25;
       needsRedraw = true;
@@ -686,8 +706,8 @@ void handleManualTouch(uint16_t x, uint16_t y) {
     }
   }
 
-  // Duration -/+ (70, 183, 30, 16) and (105, 183, 30, 16)
-  if (y >= 183 && y <= 199) {
+  // Duration -/+ (70, 203, 30, 16) and (105, 203, 30, 16)
+  if (y >= 203 && y <= 219) {
     if (x >= 70 && x <= 100) {
       if (manualState.duration > 0.5) manualState.duration -= 0.5;
       needsRedraw = true;
@@ -736,13 +756,15 @@ void sendManualCommand(bool allPixels) {
   packet.angleCmd.duration = floatToDuration(manualState.duration);
 
   if (allPixels) {
-    // Send same angles to all pixels
+    // Send same angles and directions to all pixels (synchronized movement)
     for (int i = 0; i < MAX_PIXELS; i++) {
       packet.angleCmd.setPixelAngles(i,
         manualState.angles[0],
         manualState.angles[1],
         manualState.angles[2],
-        DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
+        manualState.directions[0],
+        manualState.directions[1],
+        manualState.directions[2]);
       packet.angleCmd.setPixelStyle(i, manualState.colorIndex, manualState.opacity);
     }
     Serial.println("Sending manual command to ALL pixels");
@@ -754,7 +776,9 @@ void sendManualCommand(bool allPixels) {
           manualState.angles[0],
           manualState.angles[1],
           manualState.angles[2],
-          DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
+          manualState.directions[0],
+          manualState.directions[1],
+          manualState.directions[2]);
         packet.angleCmd.setPixelStyle(i, manualState.colorIndex, manualState.opacity);
       } else {
         // Keep other pixels at their current state (send 0,0,0 with instant transition)
@@ -788,6 +812,18 @@ void sendManualCommand(bool allPixels) {
     tft.println("FAILED!");
     delay(500);
     drawManualScreen();
+  }
+}
+
+void sendPing() {
+  ESPNowPacket packet;
+  packet.ping.command = CMD_PING;
+  packet.ping.timestamp = millis();
+
+  if (ESPNowComm::sendPacket(&packet, sizeof(PingPacket))) {
+    Serial.println("Ping sent to keep pixels alive");
+  } else {
+    Serial.println("Failed to send ping");
   }
 }
 
@@ -888,6 +924,7 @@ void loop() {
             break;
           case MODE_MANUAL:
             drawManualScreen();
+            lastPingTime = currentTime;  // Initialize ping timer
             break;
           default:
             break;
@@ -935,9 +972,14 @@ void loop() {
       break;
     }
 
-    case MODE_MANUAL:
-      // Manual mode is fully touch-driven, no automatic updates
+    case MODE_MANUAL: {
+      // Send periodic pings to keep pixels alive
+      if (currentTime - lastPingTime >= PING_INTERVAL) {
+        sendPing();
+        lastPingTime = currentTime;
+      }
       break;
+    }
   }
 
   // Small delay to avoid busy-waiting
