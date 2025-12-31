@@ -37,10 +37,12 @@ struct TestPattern {
   const char* name;
   float angles[24][3];  // 24 pixels, 3 hands each
   TransitionType transition;
-  uint16_t duration_ms;
+  float duration_sec;   // Duration in seconds
+  uint8_t colorIndex;   // Color palette index
+  uint8_t opacity;      // Opacity (0-255)
 };
 
-// Pattern 1: All hands pointing up (0°)
+// Pattern 1: All hands pointing up (0°) - White on Black
 TestPattern pattern_all_up = {
   "All Up",
   {
@@ -50,10 +52,12 @@ TestPattern pattern_all_up = {
     {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}
   },
   TRANSITION_ELASTIC,
-  3000
+  3.0,  // 3 seconds
+  0,    // White on Black
+  255   // Full opacity
 };
 
-// Pattern 2: All hands pointing right (90°)
+// Pattern 2: All hands pointing right (90°) - Black on White
 TestPattern pattern_all_right = {
   "All Right",
   {
@@ -63,10 +67,12 @@ TestPattern pattern_all_right = {
     {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}
   },
   TRANSITION_EASE_IN_OUT,
-  2000
+  2.0,  // 2 seconds
+  1,    // Black on White
+  255   // Full opacity
 };
 
-// Pattern 3: All hands pointing down (180°)
+// Pattern 3: All hands pointing down (180°) - Dark Brown on Cream
 TestPattern pattern_all_down = {
   "All Down",
   {
@@ -76,10 +82,12 @@ TestPattern pattern_all_down = {
     {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}
   },
   TRANSITION_LINEAR,
-  2500
+  2.5,  // 2.5 seconds
+  2,    // Dark Brown on Cream
+  255   // Full opacity
 };
 
-// Pattern 4: All hands pointing left (270°)
+// Pattern 4: All hands pointing left (270°) - White on Deep Sky Blue
 TestPattern pattern_all_left = {
   "All Left",
   {
@@ -88,11 +96,13 @@ TestPattern pattern_all_left = {
     {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270},
     {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}
   },
-  TRANSITION_ELASTIC,
-  3500
+  TRANSITION_BOUNCE,
+  3.5,  // 3.5 seconds
+  10,   // White on Deep Sky Blue
+  255   // Full opacity
 };
 
-// Pattern 5: Staggered - each pixel different
+// Pattern 5: Staggered - each pixel different - Ivory on Deep Pink
 TestPattern pattern_staggered = {
   "Staggered",
   {
@@ -103,8 +113,10 @@ TestPattern pattern_staggered = {
     {0, 90, 180}, {90, 180, 270}, {180, 270, 0}, {270, 0, 90},
     {0, 90, 180}, {90, 180, 270}, {180, 270, 0}, {270, 0, 90}
   },
-  TRANSITION_EASE_IN_OUT,
-  4000
+  TRANSITION_ELASTIC,
+  4.0,  // 4 seconds
+  11,   // Ivory on Deep Pink
+  255   // Full opacity
 };
 
 // Array of all patterns
@@ -143,39 +155,39 @@ void updateDisplay(TestPattern* pattern) {
   tft.setTextSize(1);
   tft.setCursor(10, 95);
   tft.print("Duration: ");
-  tft.print(pattern->duration_ms);
-  tft.println(" ms");
+  tft.print(pattern->duration_sec, 1);
+  tft.println(" sec");
 
   tft.setCursor(10, 110);
   tft.print("Transition: ");
-  switch (pattern->transition) {
-    case TRANSITION_LINEAR:
-      tft.println("Linear");
-      break;
-    case TRANSITION_EASE_IN_OUT:
-      tft.println("Ease In-Out");
-      break;
-    case TRANSITION_ELASTIC:
-      tft.println("Elastic");
-      break;
-    default:
-      tft.println("Unknown");
+  tft.println(getTransitionName(pattern->transition));
+
+  tft.setCursor(10, 125);
+  tft.print("Color: ");
+  if (pattern->colorIndex < COLOR_PALETTE_SIZE) {
+    tft.println(COLOR_PALETTE[pattern->colorIndex].name);
+  } else {
+    tft.println("Invalid");
   }
 
-  // Status
   tft.setCursor(10, 140);
+  tft.print("Opacity: ");
+  tft.println(pattern->opacity);
+
+  // Status
+  tft.setCursor(10, 165);
   tft.setTextColor(COLOR_ACCENT, COLOR_BG);
   tft.println("Broadcasting to 24 pixels...");
 
   // Next pattern countdown
-  tft.setCursor(10, 170);
+  tft.setCursor(10, 190);
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.print("Next pattern in ");
+  tft.print("Next in ");
   tft.print(COMMAND_INTERVAL / 1000);
-  tft.println(" seconds");
+  tft.println(" sec");
 
   // MAC address
-  tft.setCursor(10, 210);
+  tft.setCursor(10, 220);
   tft.setTextSize(1);
   tft.setTextColor(TFT_DARKGREY, COLOR_BG);
   tft.print("MAC: ");
@@ -186,11 +198,22 @@ void sendPattern(TestPattern* pattern) {
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
   packet.angleCmd.transition = pattern->transition;
-  packet.angleCmd.duration_ms = pattern->duration_ms;
+  packet.angleCmd.duration = floatToDuration(pattern->duration_sec);
 
-  // Set angles for all pixels
+  // Set angles and directions for all pixels
   for (int i = 0; i < MAX_PIXELS; i++) {
-    packet.angleCmd.setPixelAngles(i, pattern->angles[i][0], pattern->angles[i][1], pattern->angles[i][2]);
+    // Set angles with shortest path direction (default)
+    packet.angleCmd.setPixelAngles(i,
+      pattern->angles[i][0],
+      pattern->angles[i][1],
+      pattern->angles[i][2],
+      DIR_SHORTEST,  // Let pixel choose shortest path
+      DIR_SHORTEST,
+      DIR_SHORTEST
+    );
+
+    // Set color and opacity for each pixel
+    packet.angleCmd.setPixelStyle(i, pattern->colorIndex, pattern->opacity);
   }
 
   // Send the packet
@@ -198,8 +221,12 @@ void sendPattern(TestPattern* pattern) {
     Serial.print("Sent pattern: ");
     Serial.print(pattern->name);
     Serial.print(" (duration: ");
-    Serial.print(pattern->duration_ms);
-    Serial.println("ms)");
+    Serial.print(pattern->duration_sec, 1);
+    Serial.print("s, color: ");
+    Serial.print(pattern->colorIndex);
+    Serial.print(", opacity: ");
+    Serial.print(pattern->opacity);
+    Serial.println(")");
 
     // Update display
     updateDisplay(pattern);

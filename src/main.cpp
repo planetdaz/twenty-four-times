@@ -151,40 +151,6 @@ const int paletteSize = sizeof(colorPalette) / sizeof(ColorPair);
 
 // ---- Helper Functions ----
 
-// Get a random angle from the allowed set: 0, 90, 180, 270
-float getRandomAngle() {
-  const float angles[] = {0.0, 90.0, 180.0, 270.0};
-  return angles[random(4)];
-}
-
-// Get a random color pair from the palette
-int getRandomColorPair() {
-  return random(paletteSize);
-}
-
-// Get a random easing type
-EasingType getRandomEasing() {
-  return (EasingType)random(7);  // 0-6 for the 7 easing types
-}
-
-// Get a random duration (0.5 to 9.0 seconds) with weighted distribution
-// Favors longer durations - most animations look better when slower
-float getRandomDuration() {
-  // Weighted random: higher numbers = longer durations more likely
-  // Using triangular distribution: pick 2 random numbers, use the max
-  // This biases toward higher values (longer durations)
-  float r1 = random(851) / 100.0;  // 0.0 to 8.5
-  float r2 = random(851) / 100.0;  // 0.0 to 8.5
-  float duration = max(r1, r2) + 0.5;  // 0.5 to 9.0 seconds, biased toward longer
-  return duration;
-}
-
-// Get a random opacity from allowed set: 0 (transparent), 50 (faint), 255 (opaque)
-uint8_t getRandomOpacity() {
-  const uint8_t opacities[] = {0, 50, 255};
-  return opacities[random(3)];
-}
-
 // Get easing name for debug output
 const char* getEasingName(EasingType easing) {
   switch (easing) {
@@ -411,6 +377,9 @@ uint16_t blendColor(uint16_t bgColor, uint16_t fgColor, uint8_t opacity) {
   return (outR << 11) | (outG << 5) | outB;
 }
 
+// ---- Identify Mode State ----
+bool identifyMode = false;  // If true, show pixel ID on screen
+
 // ---- ESP-NOW Packet Handler ----
 
 // Called when an ESP-NOW packet is received
@@ -428,50 +397,71 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
     case CMD_SET_ANGLES: {
       const AngleCommandPacket& cmd = packet->angleCmd;
 
+      // Exit identify mode when we receive a new command
+      identifyMode = false;
+
       // Extract angles for this pixel
       float target1, target2, target3;
       cmd.getPixelAngles(PIXEL_ID, target1, target2, target3);
 
+      // Extract directions for this pixel
+      RotationDirection dir1, dir2, dir3;
+      cmd.getPixelDirections(PIXEL_ID, dir1, dir2, dir3);
+
+      // Extract color and opacity for this pixel
+      uint8_t colorIndex = cmd.colorIndices[PIXEL_ID];
+      uint8_t targetOpacity = cmd.opacities[PIXEL_ID];
+
       // Map transition type to easing type
-      EasingType easing;
-      switch (cmd.transition) {
-        case TRANSITION_LINEAR:
-          easing = EASING_LINEAR;
-          break;
-        case TRANSITION_EASE_IN_OUT:
-          easing = EASING_EASE_IN_OUT;
-          break;
-        case TRANSITION_ELASTIC:
-          easing = EASING_ELASTIC;
-          break;
-        case TRANSITION_INSTANT:
-          easing = EASING_LINEAR;
-          break;
-        default:
-          easing = EASING_ELASTIC;
+      EasingType easing = (EasingType)cmd.transition;
+
+      // Convert duration from compact format to seconds
+      float durationSec = durationToFloat(cmd.duration);
+
+      // Get colors from palette
+      uint16_t targetBg, targetFg;
+      if (colorIndex < paletteSize) {
+        targetBg = colorPalette[colorIndex].bg;
+        targetFg = colorPalette[colorIndex].fg;
+      } else {
+        // Invalid index, use current colors
+        targetBg = colors.currentBg;
+        targetFg = colors.currentFg;
       }
 
-      // Convert duration from milliseconds to seconds
-      float durationSec = cmd.duration_ms / 1000.0f;
-
-      // Use current colors and full opacity for synchronized mode
-      uint16_t targetBg = colors.currentBg;
-      uint16_t targetFg = colors.currentFg;
-      uint8_t targetOpacity = 255;
+      // Apply rotation directions to hand states
+      hand1.direction = (dir1 == DIR_CW) ? 1 : (dir1 == DIR_CCW) ? -1 : 0;
+      hand2.direction = (dir2 == DIR_CW) ? 1 : (dir2 == DIR_CCW) ? -1 : 0;
+      hand3.direction = (dir3 == DIR_CW) ? 1 : (dir3 == DIR_CCW) ? -1 : 0;
 
       // Start the transition
       startTransition(target1, target2, target3, targetOpacity, targetBg, targetFg, durationSec, easing);
 
-      Serial.print("ESP-NOW: Received angles [");
+      Serial.print("ESP-NOW: Angles [");
       Serial.print(target1, 0);
       Serial.print("°, ");
       Serial.print(target2, 0);
       Serial.print("°, ");
       Serial.print(target3, 0);
-      Serial.print("°] duration=");
+      Serial.print("°] dur=");
       Serial.print(durationSec, 2);
-      Serial.print("s easing=");
-      Serial.println(getEasingName(easing));
+      Serial.print("s ease=");
+      Serial.print(getEasingName(easing));
+      Serial.print(" color=");
+      Serial.print(colorIndex);
+      Serial.print(" opacity=");
+      Serial.println(targetOpacity);
+      break;
+    }
+
+    case CMD_IDENTIFY: {
+      const IdentifyPacket& cmd = packet->identify;
+      // Check if this command is for us (or for all pixels)
+      if (cmd.pixelId == PIXEL_ID || cmd.pixelId == 255) {
+        identifyMode = true;
+        Serial.print("ESP-NOW: Identify mode activated for pixel ");
+        Serial.println(PIXEL_ID);
+      }
       break;
     }
 
@@ -481,6 +471,7 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
 
     case CMD_RESET:
       Serial.println("ESP-NOW: Reset command received");
+      // Could reset to default state here
       break;
 
     default:
@@ -637,6 +628,28 @@ void loop() {
     errorState = true;
   }
 
+  // ---- Identify Mode Display ----
+  // If in identify mode, show pixel ID and skip normal rendering
+  if (identifyMode) {
+    canvas.fillScreen(GC9A01A_BLUE);
+
+    // Draw large pixel ID in the center
+    canvas.setTextColor(GC9A01A_WHITE);
+    canvas.setTextSize(15);  // Very large text
+
+    // Center the text (approximate positioning for single/double digit)
+    int xPos = (PIXEL_ID < 10) ? 85 : 55;
+    canvas.setCursor(xPos, 90);
+    canvas.print(PIXEL_ID);
+
+    // Present identify frame to display
+    tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    // Small delay and return (skip normal rendering)
+    delay(100);
+    return;
+  }
+
   // ---- Error State Display ----
   // If in error state, just show red screen with "!" and skip normal rendering
   if (errorState) {
@@ -687,10 +700,10 @@ void loop() {
     }
   }
 
-  // ---- Random Demo Loop: DISABLED ----
-  // Pixels never run autonomously - they only respond to master commands
-  // This code is kept for reference but never executes
-  if (false && !transition.isActive && (currentTime - lastTransitionTime >= TRANSITION_INTERVAL)) {
+  // ---- Demo Mode Removed ----
+  // Pixels only respond to master commands via ESP-NOW
+  // No autonomous operation
+  if (false) {
     float target1, target2, target3;
     uint8_t targetOpacity;
     uint16_t targetBg, targetFg;
