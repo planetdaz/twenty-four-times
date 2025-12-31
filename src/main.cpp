@@ -3,9 +3,16 @@
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_GC9A01A.h>
+#include <ESPNowComm.h>
 
 // Proof of concept: Three rotating clock hands on a 240x240 circular display
 // Based on the twenty-four-times simulation
+// Now with ESP-NOW communication for synchronized multi-pixel operation
+
+// ===== PIXEL CONFIGURATION =====
+// This pixel's ID (0-23). In production, this would be stored in NVS.
+// For now, we'll set it via serial command or hardcode different values per device.
+#define PIXEL_ID 0  // Change this for each device (0, 1, 2, etc.)
 
 // 240x240 RGB565 buffer (~115 KB)
 GFXcanvas16 canvas(240, 240);
@@ -98,6 +105,12 @@ unsigned long lastUpdateTime = 0;
 unsigned long lastTransitionTime = 0;
 const unsigned long TRANSITION_INTERVAL = 5000;  // 5 seconds between transitions
 bool firstTransition = true;  // Flag for initial boot transition
+
+// ===== ESP-NOW STATE =====
+bool espnowEnabled = false;  // Set to true when ESP-NOW is initialized
+bool errorState = false;     // If true, display error screen (red bg with "!")
+unsigned long lastPacketTime = 0;
+const unsigned long PACKET_TIMEOUT = 10000;  // 10 seconds without packet = show error
 
 // FPS tracking
 unsigned long fpsLastTime = 0;
@@ -399,6 +412,84 @@ uint16_t blendColor(uint16_t bgColor, uint16_t fgColor, uint8_t opacity) {
   return (outR << 11) | (outG << 5) | outB;
 }
 
+// ---- ESP-NOW Packet Handler ----
+
+// Called when an ESP-NOW packet is received
+void onPacketReceived(const ESPNowPacket* packet, size_t len) {
+  lastPacketTime = millis();
+
+  // Clear error state when we receive a packet
+  if (errorState) {
+    errorState = false;
+    Serial.println("ESP-NOW: Connection restored!");
+  }
+
+  // Handle different command types
+  switch (packet->command) {
+    case CMD_SET_ANGLES: {
+      const AngleCommandPacket& cmd = packet->angleCmd;
+
+      // Extract angles for this pixel
+      float target1, target2, target3;
+      cmd.getPixelAngles(PIXEL_ID, target1, target2, target3);
+
+      // Map transition type to easing type
+      EasingType easing;
+      switch (cmd.transition) {
+        case TRANSITION_LINEAR:
+          easing = EASING_LINEAR;
+          break;
+        case TRANSITION_EASE_IN_OUT:
+          easing = EASING_EASE_IN_OUT;
+          break;
+        case TRANSITION_ELASTIC:
+          easing = EASING_ELASTIC;
+          break;
+        case TRANSITION_INSTANT:
+          easing = EASING_LINEAR;
+          break;
+        default:
+          easing = EASING_ELASTIC;
+      }
+
+      // Convert duration from milliseconds to seconds
+      float durationSec = cmd.duration_ms / 1000.0f;
+
+      // Use current colors and full opacity for synchronized mode
+      uint16_t targetBg = colors.currentBg;
+      uint16_t targetFg = colors.currentFg;
+      uint8_t targetOpacity = 255;
+
+      // Start the transition
+      startTransition(target1, target2, target3, targetOpacity, targetBg, targetFg, durationSec, easing);
+
+      Serial.print("ESP-NOW: Received angles [");
+      Serial.print(target1, 0);
+      Serial.print("°, ");
+      Serial.print(target2, 0);
+      Serial.print("°, ");
+      Serial.print(target3, 0);
+      Serial.print("°] duration=");
+      Serial.print(durationSec, 2);
+      Serial.print("s easing=");
+      Serial.println(getEasingName(easing));
+      break;
+    }
+
+    case CMD_PING:
+      Serial.println("ESP-NOW: Ping received");
+      break;
+
+    case CMD_RESET:
+      Serial.println("ESP-NOW: Reset command received");
+      break;
+
+    default:
+      Serial.print("ESP-NOW: Unknown command: ");
+      Serial.println(packet->command);
+  }
+}
+
 // Draw a thick clock hand using 2 filled triangles (forming a rectangle) + rounded caps
 // This is more efficient than drawing many circles along the line
 void drawHand(float cx, float cy, float angleDeg, float length, float thickness, uint16_t color) {
@@ -517,18 +608,55 @@ void setup() {
   // Initialize random seed
   randomSeed(analogRead(0));
 
-  Serial.println("\n=== Boot Sequence ===");
-  Serial.println("Starting with all hands at 0°, opacity 0 (invisible)");
-  Serial.println("Black background, white foreground");
-  Serial.println("After 5 seconds: fade in to random angles");
-  Serial.println("Then: random transitions every 5 seconds");
-  Serial.println("  - Normal: random angles, opacity 255");
-  Serial.println("  - NOP (< 1 in 5): all hands at 225°, opacity 50");
-  Serial.println("  - Color change (1 in 5): random palette with good contrast\n");
+  // ---- ESP-NOW ----
+  Serial.println("\n========== ESP-NOW INIT ==========");
+  Serial.print("Pixel ID: ");
+  Serial.println(PIXEL_ID);
+
+  if (ESPNowComm::initReceiver(ESPNOW_CHANNEL)) {
+    ESPNowComm::setReceiveCallback(onPacketReceived);
+    espnowEnabled = true;
+    lastPacketTime = millis();  // Initialize packet time to avoid immediate error
+    Serial.println("ESP-NOW initialized successfully!");
+    Serial.println("Mode: Waiting for master commands");
+    Serial.println("Will show error screen if no commands received within 10s");
+  } else {
+    Serial.println("ESP-NOW initialization failed!");
+    Serial.println("ERROR: Cannot operate without ESP-NOW");
+    errorState = true;  // Show error immediately
+  }
+  Serial.println("==================================\n");
 }
 
 void loop() {
   unsigned long currentTime = millis();
+
+  // ---- ESP-NOW Timeout Check ----
+  // If we haven't received a packet in PACKET_TIMEOUT ms, show error state
+  if (espnowEnabled && !errorState && (currentTime - lastPacketTime > PACKET_TIMEOUT)) {
+    Serial.println("\n!!! ESP-NOW TIMEOUT - NO MASTER SIGNAL !!!\n");
+    errorState = true;
+  }
+
+  // ---- Error State Display ----
+  // If in error state, just show red screen with "!" and skip normal rendering
+  if (errorState) {
+    canvas.fillScreen(GC9A01A_RED);
+
+    // Draw large "!" in the center
+    // We'll draw it manually since we want it large and centered
+    canvas.setTextColor(GC9A01A_WHITE);
+    canvas.setTextSize(10);  // Large text
+    canvas.setCursor(95, 90);  // Roughly centered for "!"
+    canvas.print("!");
+
+    // Present error frame to display
+    tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    // Small delay and return (skip normal rendering)
+    delay(100);
+    return;
+  }
 
   // Update hand angles based on transition
   if (transition.isActive) {
@@ -560,8 +688,10 @@ void loop() {
     }
   }
 
-  // ---- Random Demo Loop: Start new transition 5 seconds after previous one completes ----
-  if (!transition.isActive && (currentTime - lastTransitionTime >= TRANSITION_INTERVAL)) {
+  // ---- Random Demo Loop: DISABLED ----
+  // Pixels never run autonomously - they only respond to master commands
+  // This code is kept for reference but never executes
+  if (false && !transition.isActive && (currentTime - lastTransitionTime >= TRANSITION_INTERVAL)) {
     float target1, target2, target3;
     uint8_t targetOpacity;
     uint16_t targetBg, targetFg;
