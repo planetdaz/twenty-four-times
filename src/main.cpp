@@ -11,7 +11,7 @@
 // ===== PIXEL CONFIGURATION =====
 // This pixel's ID (0-23). In production, this would be stored in NVS.
 // For now, we'll set it via serial command or hardcode different values per device.
-#define PIXEL_ID 0  // Change this for each device (0, 1, 2, etc.)
+#define PIXEL_ID 2  // Change this for each device (0, 1, 2, etc.)
 
 // 240x240 RGB565 buffer (~115 KB)
 GFXcanvas16 canvas(240, 240);
@@ -243,6 +243,14 @@ void startTransition(float target1, float target2, float target3,
   colors.targetBg = targetBg;
   colors.startFg = colors.currentFg;
   colors.targetFg = targetFg;
+
+  // Normalize current angles to 0-360 range before starting new transition
+  while (hand1.currentAngle < 0) hand1.currentAngle += 360.0;
+  while (hand1.currentAngle >= 360.0) hand1.currentAngle -= 360.0;
+  while (hand2.currentAngle < 0) hand2.currentAngle += 360.0;
+  while (hand2.currentAngle >= 360.0) hand2.currentAngle -= 360.0;
+  while (hand3.currentAngle < 0) hand3.currentAngle += 360.0;
+  while (hand3.currentAngle >= 360.0) hand3.currentAngle -= 360.0;
 
   // Set up hand 1
   hand1.startAngle = hand1.currentAngle;
@@ -731,10 +739,19 @@ void loop() {
     float t = elapsed / transition.duration;
 
     if (t >= 1.0) {
-      // Transition complete
+      // Transition complete - set to target and normalize
       hand1.currentAngle = hand1.targetAngle;
       hand2.currentAngle = hand2.targetAngle;
       hand3.currentAngle = hand3.targetAngle;
+
+      // Normalize angles to 0-360 range
+      while (hand1.currentAngle < 0) hand1.currentAngle += 360.0;
+      while (hand1.currentAngle >= 360.0) hand1.currentAngle -= 360.0;
+      while (hand2.currentAngle < 0) hand2.currentAngle += 360.0;
+      while (hand2.currentAngle >= 360.0) hand2.currentAngle -= 360.0;
+      while (hand3.currentAngle < 0) hand3.currentAngle += 360.0;
+      while (hand3.currentAngle >= 360.0) hand3.currentAngle -= 360.0;
+
       opacity.current = opacity.target;
       colors.currentBg = colors.targetBg;
       colors.currentFg = colors.targetFg;
