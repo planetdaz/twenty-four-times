@@ -452,9 +452,6 @@ void sendIdentifyCommand(uint8_t pixelId) {
       tft.println(pixelId);
     }
 
-    tft.setTextSize(1);
-    tft.setCursor(70, 160);
-    tft.println("Duration: 5 seconds");
   } else {
     Serial.println("Failed to send IDENTIFY command!");
   }
