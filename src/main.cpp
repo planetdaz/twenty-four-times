@@ -1,4 +1,3 @@
-
 #include <Arduino.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
@@ -12,7 +11,7 @@
 // ===== PIXEL CONFIGURATION =====
 // This pixel's ID (0-23). In production, this would be stored in NVS.
 // For now, we'll set it via serial command or hardcode different values per device.
-#define PIXEL_ID 0  // Change this for each device (0, 1, 2, etc.)
+#define PIXEL_ID 1  // Change this for each device (0, 1, 2, etc.)
 
 // 240x240 RGB565 buffer (~115 KB)
 GFXcanvas16 canvas(240, 240);
