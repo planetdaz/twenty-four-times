@@ -11,7 +11,7 @@
 // ===== PIXEL CONFIGURATION =====
 // This pixel's ID (0-23). In production, this would be stored in NVS.
 // For now, we'll set it via serial command or hardcode different values per device.
-#define PIXEL_ID 2  // Change this for each device (0, 1, 2, etc.)
+#define PIXEL_ID 0  // Change this for each device (0, 1, 2, etc.)
 
 // 240x240 RGB565 buffer (~115 KB)
 GFXcanvas16 canvas(240, 240);
@@ -248,8 +248,11 @@ void startTransition(float target1, float target2, float target3,
   hand1.startAngle = hand1.currentAngle;
   hand1.targetAngle = target1;
   hand1.direction = dir1;
-  // If start == target, do a full 360° rotation in the chosen direction
-  if (abs(hand1.currentAngle - target1) < 0.1) {
+  // If start == target (accounting for 360° wrap), do a full 360° rotation
+  float diff1 = hand1.currentAngle - target1;
+  while (diff1 > 180.0) diff1 -= 360.0;
+  while (diff1 < -180.0) diff1 += 360.0;
+  if (abs(diff1) < 0.1) {
     hand1.targetAngle = hand1.currentAngle + (360.0 * hand1.direction);
   }
 
@@ -257,7 +260,10 @@ void startTransition(float target1, float target2, float target3,
   hand2.startAngle = hand2.currentAngle;
   hand2.targetAngle = target2;
   hand2.direction = dir2;
-  if (abs(hand2.currentAngle - target2) < 0.1) {
+  float diff2 = hand2.currentAngle - target2;
+  while (diff2 > 180.0) diff2 -= 360.0;
+  while (diff2 < -180.0) diff2 += 360.0;
+  if (abs(diff2) < 0.1) {
     hand2.targetAngle = hand2.currentAngle + (360.0 * hand2.direction);
   }
 
@@ -265,7 +271,10 @@ void startTransition(float target1, float target2, float target3,
   hand3.startAngle = hand3.currentAngle;
   hand3.targetAngle = target3;
   hand3.direction = dir3;
-  if (abs(hand3.currentAngle - target3) < 0.1) {
+  float diff3 = hand3.currentAngle - target3;
+  while (diff3 > 180.0) diff3 -= 360.0;
+  while (diff3 < -180.0) diff3 += 360.0;
+  if (abs(diff3) < 0.1) {
     hand3.targetAngle = hand3.currentAngle + (360.0 * hand3.direction);
   }
 }
@@ -281,17 +290,18 @@ void updateHandAngle(HandState &hand, float t) {
   // For full 360° rotations, diff is already set correctly (±360)
   // For normal transitions, apply direction consistently
   if (abs(diff) < 359.0) {  // Not a full rotation
-    // Normalize to -180 to +180 range (shortest path)
-    while (diff > 180.0) diff -= 360.0;
-    while (diff < -180.0) diff += 360.0;
+    // Normalize diff to 0-360 range first
+    while (diff < 0) diff += 360.0;
+    while (diff >= 360.0) diff -= 360.0;
 
     // Now apply the specified direction
     if (hand.direction > 0) {
-      // Clockwise: if diff is negative, add 360 to go the long way
-      if (diff < 0) diff += 360.0;
+      // Clockwise (positive direction): keep diff as-is (0-360)
+      // This means we always rotate CW by the calculated amount
     } else {
-      // Counter-clockwise: if diff is positive, subtract 360 to go the long way
-      if (diff > 0) diff -= 360.0;
+      // Counter-clockwise (negative direction): go the other way
+      // If diff is 90, we want to go -270 (CCW 270°)
+      diff = diff - 360.0;
     }
   }
 
@@ -449,6 +459,35 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       } else {
         direction3 = (dir3 == DIR_CW) ? 1 : -1;
       }
+
+      // Debug output
+      Serial.print("Pixel ");
+      Serial.print(PIXEL_ID);
+      Serial.print(": Targets=(");
+      Serial.print(target1, 0);
+      Serial.print(",");
+      Serial.print(target2, 0);
+      Serial.print(",");
+      Serial.print(target3, 0);
+      Serial.print(") Dirs=(");
+      Serial.print(dir1);
+      Serial.print(",");
+      Serial.print(dir2);
+      Serial.print(",");
+      Serial.print(dir3);
+      Serial.print(") -> (");
+      Serial.print(direction1);
+      Serial.print(",");
+      Serial.print(direction2);
+      Serial.print(",");
+      Serial.print(direction3);
+      Serial.print(") Current=(");
+      Serial.print(hand1.currentAngle, 0);
+      Serial.print(",");
+      Serial.print(hand2.currentAngle, 0);
+      Serial.print(",");
+      Serial.print(hand3.currentAngle, 0);
+      Serial.println(")");
 
       // Start the transition with specified directions
       startTransition(target1, target2, target3, targetOpacity, targetBg, targetFg, durationSec, easing,

@@ -66,19 +66,23 @@ inline float angleToFloat(angle_t angle) {
   return (angle / 256.0f) * 360.0f;
 }
 
-// Compact duration representation (0-255 maps to 0-60 seconds)
+// Compact duration representation (0-255 maps to 0-60 seconds in 0.25s steps)
+// Resolution: 0.25 seconds (240 steps from 0 to 60 seconds)
 typedef uint8_t duration_t;
 
 // Convert float duration (0-60 seconds) to compact representation
+// Uses 0.25s resolution: value = seconds / 0.25
 inline duration_t floatToDuration(float seconds) {
   if (seconds < 0) seconds = 0;
   if (seconds > 60.0f) seconds = 60.0f;
-  return (uint8_t)((seconds / 60.0f) * 255.0f + 0.5f);  // Round to nearest
+  // Convert to 0.25s units and round to nearest
+  return (uint8_t)(seconds * 4.0f + 0.5f);
 }
 
 // Convert compact duration to float (0-60 seconds)
+// Uses 0.25s resolution: seconds = value * 0.25
 inline float durationToFloat(duration_t duration) {
-  return (duration / 255.0f) * 60.0f;
+  return duration * 0.25f;
 }
 
 // Command packet for setting angles
