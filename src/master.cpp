@@ -27,9 +27,12 @@ TFT_eSPI tft = TFT_eSPI();
 // Timing
 unsigned long lastCommandTime = 0;
 const unsigned long COMMAND_INTERVAL = 5000;  // Send new command every 5 seconds
+const unsigned long IDENTIFY_DURATION = 5000; // Identify phase duration
 
 // Test pattern state
 int patternIndex = 0;
+bool inIdentifyPhase = false;
+unsigned long identifyStartTime = 0;
 
 // ===== TEST PATTERNS =====
 
@@ -194,6 +197,43 @@ void updateDisplay(TestPattern* pattern) {
   tft.println(ESPNowComm::getMacAddress());
 }
 
+void sendIdentifyCommand(uint8_t pixelId) {
+  ESPNowPacket packet;
+  packet.identify.command = CMD_IDENTIFY;
+  packet.identify.pixelId = pixelId;
+
+  if (ESPNowComm::sendPacket(&packet, sizeof(IdentifyPacket))) {
+    Serial.print("Sent IDENTIFY command for pixel ");
+    if (pixelId == 255) {
+      Serial.println("ALL");
+    } else {
+      Serial.println(pixelId);
+    }
+
+    // Update display
+    tft.fillScreen(TFT_BLUE);
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+    tft.setTextSize(3);
+    tft.setCursor(40, 80);
+    tft.println("IDENTIFY MODE");
+
+    tft.setTextSize(2);
+    tft.setCursor(60, 120);
+    if (pixelId == 255) {
+      tft.println("All Pixels");
+    } else {
+      tft.print("Pixel ID: ");
+      tft.println(pixelId);
+    }
+
+    tft.setTextSize(1);
+    tft.setCursor(70, 160);
+    tft.println("Duration: 5 seconds");
+  } else {
+    Serial.println("Failed to send IDENTIFY command!");
+  }
+}
+
 void sendPattern(TestPattern* pattern) {
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
@@ -304,17 +344,42 @@ void setup() {
 
 void loop() {
   unsigned long currentTime = millis();
-  
-  // Send a new pattern every COMMAND_INTERVAL milliseconds
-  if (currentTime - lastCommandTime >= COMMAND_INTERVAL) {
-    sendPattern(patterns[patternIndex]);
-    
-    // Move to next pattern
-    patternIndex = (patternIndex + 1) % numPatterns;
-    
-    lastCommandTime = currentTime;
+
+  // Check if we're in identify phase
+  if (inIdentifyPhase) {
+    // Check if identify phase is complete
+    if (currentTime - identifyStartTime >= IDENTIFY_DURATION) {
+      inIdentifyPhase = false;
+      lastCommandTime = currentTime;
+
+      Serial.println("Identify phase complete\n");
+
+      // Send first pattern after identify
+      sendPattern(patterns[patternIndex]);
+      patternIndex = (patternIndex + 1) % numPatterns;
+    }
+  } else {
+    // Normal pattern loop
+    // Send a new pattern every COMMAND_INTERVAL milliseconds
+    if (currentTime - lastCommandTime >= COMMAND_INTERVAL) {
+      // Every 6th cycle (after 5 patterns), do an identify phase
+      if (patternIndex == 0) {
+        // Start identify phase - identify all pixels
+        inIdentifyPhase = true;
+        identifyStartTime = currentTime;
+        sendIdentifyCommand(255);  // 255 = all pixels
+
+        Serial.println("\n=== Starting Identify Phase ===");
+      } else {
+        // Send next pattern
+        sendPattern(patterns[patternIndex]);
+        patternIndex = (patternIndex + 1) % numPatterns;
+      }
+
+      lastCommandTime = currentTime;
+    }
   }
-  
+
   // Small delay to avoid busy-waiting
   delay(10);
 }

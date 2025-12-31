@@ -11,7 +11,7 @@
 // ===== PIXEL CONFIGURATION =====
 // This pixel's ID (0-23). In production, this would be stored in NVS.
 // For now, we'll set it via serial command or hardcode different values per device.
-#define PIXEL_ID 1  // Change this for each device (0, 1, 2, etc.)
+#define PIXEL_ID 2  // Change this for each device (0, 1, 2, etc.)
 
 // 240x240 RGB565 buffer (~115 KB)
 GFXcanvas16 canvas(240, 240);
@@ -226,7 +226,8 @@ float applyEasing(float t, TransitionType easing) {
 void startTransition(float target1, float target2, float target3,
                      uint8_t targetOpacity,
                      uint16_t targetBg, uint16_t targetFg,
-                     float durationSeconds, TransitionType easing) {
+                     float durationSeconds, TransitionType easing,
+                     int8_t dir1, int8_t dir2, int8_t dir3) {
   // Set up transition state
   transition.startTime = millis();
   transition.duration = durationSeconds;
@@ -246,7 +247,7 @@ void startTransition(float target1, float target2, float target3,
   // Set up hand 1
   hand1.startAngle = hand1.currentAngle;
   hand1.targetAngle = target1;
-  hand1.direction = (random(2) == 0) ? 1 : -1;  // Random CW or CCW
+  hand1.direction = dir1;
   // If start == target, do a full 360° rotation in the chosen direction
   if (abs(hand1.currentAngle - target1) < 0.1) {
     hand1.targetAngle = hand1.currentAngle + (360.0 * hand1.direction);
@@ -255,7 +256,7 @@ void startTransition(float target1, float target2, float target3,
   // Set up hand 2
   hand2.startAngle = hand2.currentAngle;
   hand2.targetAngle = target2;
-  hand2.direction = (random(2) == 0) ? 1 : -1;
+  hand2.direction = dir2;
   if (abs(hand2.currentAngle - target2) < 0.1) {
     hand2.targetAngle = hand2.currentAngle + (360.0 * hand2.direction);
   }
@@ -263,7 +264,7 @@ void startTransition(float target1, float target2, float target3,
   // Set up hand 3
   hand3.startAngle = hand3.currentAngle;
   hand3.targetAngle = target3;
-  hand3.direction = (random(2) == 0) ? 1 : -1;
+  hand3.direction = dir3;
   if (abs(hand3.currentAngle - target3) < 0.1) {
     hand3.targetAngle = hand3.currentAngle + (360.0 * hand3.direction);
   }
@@ -411,13 +412,43 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
         targetFg = colors.currentFg;
       }
 
-      // Apply rotation directions to hand states
-      hand1.direction = (dir1 == DIR_CW) ? 1 : (dir1 == DIR_CCW) ? -1 : 0;
-      hand2.direction = (dir2 == DIR_CW) ? 1 : (dir2 == DIR_CCW) ? -1 : 0;
-      hand3.direction = (dir3 == DIR_CW) ? 1 : (dir3 == DIR_CCW) ? -1 : 0;
+      // Convert rotation directions to int8_t for startTransition
+      // DIR_SHORTEST (0) = choose shortest path based on angle difference
+      // DIR_CW (1) = clockwise (1)
+      // DIR_CCW (2) = counter-clockwise (-1)
+      int8_t direction1, direction2, direction3;
 
-      // Start the transition
-      startTransition(target1, target2, target3, targetOpacity, targetBg, targetFg, durationSec, easing);
+      if (dir1 == DIR_SHORTEST) {
+        // Choose shortest path
+        float diff = target1 - hand1.currentAngle;
+        while (diff > 180.0) diff -= 360.0;
+        while (diff < -180.0) diff += 360.0;
+        direction1 = (diff >= 0) ? 1 : -1;
+      } else {
+        direction1 = (dir1 == DIR_CW) ? 1 : -1;
+      }
+
+      if (dir2 == DIR_SHORTEST) {
+        float diff = target2 - hand2.currentAngle;
+        while (diff > 180.0) diff -= 360.0;
+        while (diff < -180.0) diff += 360.0;
+        direction2 = (diff >= 0) ? 1 : -1;
+      } else {
+        direction2 = (dir2 == DIR_CW) ? 1 : -1;
+      }
+
+      if (dir3 == DIR_SHORTEST) {
+        float diff = target3 - hand3.currentAngle;
+        while (diff > 180.0) diff -= 360.0;
+        while (diff < -180.0) diff += 360.0;
+        direction3 = (diff >= 0) ? 1 : -1;
+      } else {
+        direction3 = (dir3 == DIR_CW) ? 1 : -1;
+      }
+
+      // Start the transition with specified directions
+      startTransition(target1, target2, target3, targetOpacity, targetBg, targetFg, durationSec, easing,
+                      direction1, direction2, direction3);
 
       Serial.print("ESP-NOW: Angles [");
       Serial.print(target1, 0);
