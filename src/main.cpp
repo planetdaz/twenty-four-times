@@ -279,15 +279,19 @@ void updateHandAngle(HandState &hand, float t) {
   float diff = hand.targetAngle - hand.startAngle;
 
   // For full 360° rotations, diff is already set correctly (±360)
-  // For normal transitions, normalize and apply direction
+  // For normal transitions, apply direction consistently
   if (abs(diff) < 359.0) {  // Not a full rotation
-    // Normalize to 0-360 range
-    while (diff < 0) diff += 360.0;
-    while (diff >= 360.0) diff -= 360.0;
+    // Normalize to -180 to +180 range (shortest path)
+    while (diff > 180.0) diff -= 360.0;
+    while (diff < -180.0) diff += 360.0;
 
-    // If going CCW, take the longer path
-    if (hand.direction < 0) {
-      diff = diff - 360.0;  // Go the other way
+    // Now apply the specified direction
+    if (hand.direction > 0) {
+      // Clockwise: if diff is negative, add 360 to go the long way
+      if (diff < 0) diff += 360.0;
+    } else {
+      // Counter-clockwise: if diff is positive, subtract 360 to go the long way
+      if (diff > 0) diff -= 360.0;
     }
   }
 
