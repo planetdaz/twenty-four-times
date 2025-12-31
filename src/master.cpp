@@ -48,6 +48,16 @@ const unsigned long SIMULATION_INTERVAL = 5000;  // 5 seconds between random pat
 const unsigned long PATTERN_INTERVAL = 5000;     // 5 seconds between test patterns
 const unsigned long IDENTIFY_DURATION = 5000;    // Identify phase duration
 
+// Manual mode state
+struct ManualState {
+  uint8_t selectedPixel = 0;     // Currently selected pixel (0-23)
+  float angles[3] = {0, 0, 0};   // Angles for the 3 hands
+  uint8_t colorIndex = 0;        // Color palette index
+  uint8_t opacity = 255;         // Opacity (0-255)
+  TransitionType transition = TRANSITION_LINEAR;
+  float duration = 2.0;          // Duration in seconds
+} manualState;
+
 // Test pattern state
 int patternIndex = 0;
 
@@ -155,6 +165,11 @@ TestPattern* patterns[] = {
 };
 const int numPatterns = 5;
 
+// ===== FUNCTION DECLARATIONS =====
+void drawManualScreen();
+void handleManualTouch(uint16_t x, uint16_t y);
+void sendManualCommand(bool allPixels);
+
 // ===== FUNCTIONS =====
 
 // Read touch input (CST816S capacitive touch - direct I2C register reads)
@@ -248,15 +263,15 @@ void drawMenu() {
   tft.setCursor(30, 195);
   tft.println("Show pixel IDs");
 
-  // Button 4: Manual (bottom right) - disabled for now
-  tft.fillRoundRect(170, 160, 140, 60, 8, TFT_DARKGREY);
-  tft.setTextColor(TFT_LIGHTGREY, TFT_DARKGREY);
+  // Button 4: Manual (bottom right)
+  tft.fillRoundRect(170, 160, 140, 60, 8, TFT_ORANGE);
+  tft.setTextColor(TFT_WHITE, TFT_ORANGE);
   tft.setTextSize(2);
   tft.setCursor(195, 175);
   tft.println("Manual");
   tft.setTextSize(1);
-  tft.setCursor(185, 195);
-  tft.println("Coming soon");
+  tft.setCursor(180, 195);
+  tft.println("Direct control");
 }
 
 // Check which menu button was pressed
@@ -273,10 +288,10 @@ ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
   if (x >= 10 && x <= 160 && y >= 160 && y <= 220) {
     return MODE_IDENTIFY;
   }
-  // Button 4: Manual - disabled
-  // if (x >= 170 && x <= 310 && y >= 160 && y <= 220) {
-  //   return MODE_MANUAL;
-  // }
+  // Button 4: Manual (170, 160, 140, 60)
+  if (x >= 170 && x <= 310 && y >= 160 && y <= 220) {
+    return MODE_MANUAL;
+  }
 
   return MODE_MENU;  // No button pressed
 }
@@ -493,6 +508,285 @@ void sendPattern(TestPattern* pattern) {
   }
 }
 
+// ===== MANUAL MODE FUNCTIONS =====
+
+void drawManualScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title
+  tft.setTextColor(COLOR_ACCENT, COLOR_BG);
+  tft.setTextSize(2);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("Manual Control", 160, 5);
+  tft.setTextDatum(TL_DATUM);
+
+  // Pixel selector
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(5, 30);
+  tft.print("Pixel: ");
+  tft.print(manualState.selectedPixel);
+
+  // Prev/Next buttons for pixel selection
+  tft.fillRoundRect(60, 28, 30, 16, 4, TFT_DARKGREY);
+  tft.fillRoundRect(95, 28, 30, 16, 4, TFT_DARKGREY);
+  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+  tft.setCursor(68, 30);
+  tft.print("<");
+  tft.setCursor(103, 30);
+  tft.print(">");
+
+  // Angle controls (3 rows)
+  const char* handNames[] = {"Hand 1:", "Hand 2:", "Hand 3:"};
+  for (int i = 0; i < 3; i++) {
+    int y = 55 + i * 30;
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setCursor(5, y);
+    tft.print(handNames[i]);
+    tft.setCursor(55, y);
+    tft.printf("%3.0f", manualState.angles[i]);
+    tft.print((char)247);  // Degree symbol
+
+    // -/+ buttons
+    tft.fillRoundRect(100, y - 2, 25, 16, 4, TFT_DARKGREY);
+    tft.fillRoundRect(130, y - 2, 25, 16, 4, TFT_DARKGREY);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setCursor(108, y);
+    tft.print("-");
+    tft.setCursor(138, y);
+    tft.print("+");
+  }
+
+  // Color selector
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(5, 145);
+  tft.print("Color:");
+  tft.fillRoundRect(50, 143, 30, 16, 4, TFT_DARKGREY);
+  tft.fillRoundRect(85, 143, 30, 16, 4, TFT_DARKGREY);
+  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+  tft.setCursor(58, 145);
+  tft.print("<");
+  tft.setCursor(93, 145);
+  tft.print(">");
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(120, 145);
+  tft.print(manualState.colorIndex);
+
+  // Opacity selector
+  tft.setCursor(5, 165);
+  tft.print("Opacity:");
+  tft.fillRoundRect(60, 163, 30, 16, 4, TFT_DARKGREY);
+  tft.fillRoundRect(95, 163, 30, 16, 4, TFT_DARKGREY);
+  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+  tft.setCursor(68, 165);
+  tft.print("-");
+  tft.setCursor(103, 165);
+  tft.print("+");
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(130, 165);
+  tft.print(manualState.opacity);
+
+  // Duration selector
+  tft.setCursor(5, 185);
+  tft.print("Duration:");
+  tft.fillRoundRect(70, 183, 30, 16, 4, TFT_DARKGREY);
+  tft.fillRoundRect(105, 183, 30, 16, 4, TFT_DARKGREY);
+  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+  tft.setCursor(78, 185);
+  tft.print("-");
+  tft.setCursor(113, 185);
+  tft.print("+");
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(140, 185);
+  tft.printf("%.1fs", manualState.duration);
+
+  // Send button (large, prominent)
+  tft.fillRoundRect(170, 30, 140, 50, 8, TFT_GREEN);
+  tft.setTextColor(TFT_WHITE, TFT_GREEN);
+  tft.setTextSize(2);
+  tft.setCursor(195, 45);
+  tft.println("SEND");
+
+  // All Pixels button
+  tft.fillRoundRect(170, 90, 140, 35, 8, TFT_BLUE);
+  tft.setTextColor(TFT_WHITE, TFT_BLUE);
+  tft.setTextSize(1);
+  tft.setCursor(185, 100);
+  tft.println("Send to ALL Pixels");
+
+  // Reset button
+  tft.fillRoundRect(170, 135, 140, 35, 8, TFT_MAROON);
+  tft.setTextColor(TFT_WHITE, TFT_MAROON);
+  tft.setCursor(200, 145);
+  tft.println("Reset to 0");
+
+  // Back button
+  tft.fillRoundRect(170, 180, 140, 35, 8, TFT_DARKGREY);
+  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+  tft.setCursor(205, 190);
+  tft.println("< Menu");
+}
+
+void handleManualTouch(uint16_t x, uint16_t y) {
+  bool needsRedraw = false;
+
+  // Pixel prev/next (60, 28, 30, 16) and (95, 28, 30, 16)
+  if (y >= 28 && y <= 44) {
+    if (x >= 60 && x <= 90) {
+      manualState.selectedPixel = (manualState.selectedPixel == 0) ? 23 : manualState.selectedPixel - 1;
+      needsRedraw = true;
+    } else if (x >= 95 && x <= 125) {
+      manualState.selectedPixel = (manualState.selectedPixel + 1) % 24;
+      needsRedraw = true;
+    }
+  }
+
+  // Angle controls (3 rows at y=55, 85, 115)
+  for (int i = 0; i < 3; i++) {
+    int y_base = 55 + i * 30;
+    if (y >= y_base - 2 && y <= y_base + 14) {
+      // Minus button (100, y-2, 25, 16)
+      if (x >= 100 && x <= 125) {
+        manualState.angles[i] -= 15;
+        if (manualState.angles[i] < 0) manualState.angles[i] += 360;
+        needsRedraw = true;
+      }
+      // Plus button (130, y-2, 25, 16)
+      else if (x >= 130 && x <= 155) {
+        manualState.angles[i] += 15;
+        if (manualState.angles[i] >= 360) manualState.angles[i] -= 360;
+        needsRedraw = true;
+      }
+    }
+  }
+
+  // Color prev/next (50, 143, 30, 16) and (85, 143, 30, 16)
+  if (y >= 143 && y <= 159) {
+    if (x >= 50 && x <= 80) {
+      manualState.colorIndex = (manualState.colorIndex == 0) ? (COLOR_PALETTE_SIZE - 1) : manualState.colorIndex - 1;
+      needsRedraw = true;
+    } else if (x >= 85 && x <= 115) {
+      manualState.colorIndex = (manualState.colorIndex + 1) % COLOR_PALETTE_SIZE;
+      needsRedraw = true;
+    }
+  }
+
+  // Opacity -/+ (60, 163, 30, 16) and (95, 163, 30, 16)
+  if (y >= 163 && y <= 179) {
+    if (x >= 60 && x <= 90) {
+      if (manualState.opacity >= 25) manualState.opacity -= 25;
+      needsRedraw = true;
+    } else if (x >= 95 && x <= 125) {
+      if (manualState.opacity <= 230) manualState.opacity += 25;
+      needsRedraw = true;
+    }
+  }
+
+  // Duration -/+ (70, 183, 30, 16) and (105, 183, 30, 16)
+  if (y >= 183 && y <= 199) {
+    if (x >= 70 && x <= 100) {
+      if (manualState.duration > 0.5) manualState.duration -= 0.5;
+      needsRedraw = true;
+    } else if (x >= 105 && x <= 135) {
+      if (manualState.duration < 10.0) manualState.duration += 0.5;
+      needsRedraw = true;
+    }
+  }
+
+  // SEND button (170, 30, 140, 50)
+  if (x >= 170 && x <= 310 && y >= 30 && y <= 80) {
+    sendManualCommand(false);  // Send to selected pixel only
+    return;
+  }
+
+  // Send to ALL button (170, 90, 140, 35)
+  if (x >= 170 && x <= 310 && y >= 90 && y <= 125) {
+    sendManualCommand(true);  // Send to all pixels
+    return;
+  }
+
+  // Reset button (170, 135, 140, 35)
+  if (x >= 170 && x <= 310 && y >= 135 && y <= 170) {
+    manualState.angles[0] = 0;
+    manualState.angles[1] = 0;
+    manualState.angles[2] = 0;
+    needsRedraw = true;
+  }
+
+  // Back button (170, 180, 140, 35)
+  if (x >= 170 && x <= 310 && y >= 180 && y <= 215) {
+    currentMode = MODE_MENU;
+    drawMenu();
+    return;
+  }
+
+  if (needsRedraw) {
+    drawManualScreen();
+  }
+}
+
+void sendManualCommand(bool allPixels) {
+  ESPNowPacket packet;
+  packet.angleCmd.command = CMD_SET_ANGLES;
+  packet.angleCmd.transition = manualState.transition;
+  packet.angleCmd.duration = floatToDuration(manualState.duration);
+
+  if (allPixels) {
+    // Send same angles to all pixels
+    for (int i = 0; i < MAX_PIXELS; i++) {
+      packet.angleCmd.setPixelAngles(i,
+        manualState.angles[0],
+        manualState.angles[1],
+        manualState.angles[2],
+        DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
+      packet.angleCmd.setPixelStyle(i, manualState.colorIndex, manualState.opacity);
+    }
+    Serial.println("Sending manual command to ALL pixels");
+  } else {
+    // Send to selected pixel only, others get current angles (no change)
+    for (int i = 0; i < MAX_PIXELS; i++) {
+      if (i == manualState.selectedPixel) {
+        packet.angleCmd.setPixelAngles(i,
+          manualState.angles[0],
+          manualState.angles[1],
+          manualState.angles[2],
+          DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
+        packet.angleCmd.setPixelStyle(i, manualState.colorIndex, manualState.opacity);
+      } else {
+        // Keep other pixels at their current state (send 0,0,0 with instant transition)
+        packet.angleCmd.setPixelAngles(i, 0, 0, 0, DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
+        packet.angleCmd.setPixelStyle(i, 0, 0);  // Invisible
+      }
+    }
+    Serial.print("Sending manual command to pixel ");
+    Serial.println(manualState.selectedPixel);
+  }
+
+  if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {
+    Serial.println("Manual command sent successfully");
+
+    // Brief visual feedback
+    tft.fillRoundRect(170, 30, 140, 50, 8, TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+    tft.setTextSize(2);
+    tft.setCursor(200, 45);
+    tft.println("SENT!");
+    delay(200);
+    drawManualScreen();
+  } else {
+    Serial.println("Failed to send manual command");
+
+    // Error feedback
+    tft.fillRoundRect(170, 30, 140, 50, 8, TFT_RED);
+    tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.setTextSize(2);
+    tft.setCursor(185, 45);
+    tft.println("FAILED!");
+    delay(500);
+    drawManualScreen();
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -588,12 +882,18 @@ void loop() {
           case MODE_IDENTIFY:
             sendIdentifyCommand(255);
             break;
+          case MODE_MANUAL:
+            drawManualScreen();
+            break;
           default:
             break;
         }
       }
+    } else if (currentMode == MODE_MANUAL) {
+      // Manual mode has its own touch handler
+      handleManualTouch(tx, ty);
     } else {
-      // Any touch in non-menu mode returns to menu
+      // Any touch in other modes returns to menu
       currentMode = MODE_MENU;
       drawMenu();
       Serial.println("Returned to menu");
@@ -632,7 +932,7 @@ void loop() {
     }
 
     case MODE_MANUAL:
-      // Future: manual control interface
+      // Manual mode is fully touch-driven, no automatic updates
       break;
   }
 
