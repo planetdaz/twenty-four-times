@@ -2,7 +2,6 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <TFT_eSPI.h>
-#include <CST816S.h>
 #include <ESPNowComm.h>
 
 // ===== MASTER CONTROLLER FOR CYD (Capacitive Touch) =====
@@ -15,10 +14,10 @@
 #define TOUCH_SCL 32
 #define TOUCH_INT 21
 #define TOUCH_RST 25
+#define CST816S_ADDR 0x15
 
 // ===== DISPLAY SETUP =====
 TFT_eSPI tft = TFT_eSPI();
-CST816S touch(TOUCH_SDA, TOUCH_SCL, TOUCH_RST, TOUCH_INT);
 
 // Display dimensions
 #define SCREEN_WIDTH 320
@@ -158,30 +157,44 @@ const int numPatterns = 5;
 
 // ===== FUNCTIONS =====
 
-// Read touch input (CST816S capacitive touch)
+// Read touch input (CST816S capacitive touch - direct I2C register reads)
 bool readTouch(uint16_t &x, uint16_t &y) {
-  if (touch.available()) {
-    // Debounce
-    unsigned long now = millis();
-    if (now - lastTouchTime < TOUCH_DEBOUNCE) {
-      return false;
+  // Debounce
+  unsigned long now = millis();
+  if (now - lastTouchTime < TOUCH_DEBOUNCE) {
+    return false;
+  }
+
+  // CST816S Capacitive Touch - Direct I2C register reads
+  Wire.beginTransmission(CST816S_ADDR);
+  Wire.write(0x02);  // Start at finger count register
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+
+  Wire.requestFrom(CST816S_ADDR, 5);
+  if (Wire.available() >= 5) {
+    uint8_t fingers = Wire.read();  // 0x02 - finger count
+    uint8_t xh = Wire.read();       // 0x03
+    uint8_t xl = Wire.read();       // 0x04
+    uint8_t yh = Wire.read();       // 0x05
+    uint8_t yl = Wire.read();       // 0x06
+
+    if (fingers > 0) {
+      uint16_t rawX = ((xh & 0x0F) << 8) | xl;
+      uint16_t rawY = ((yh & 0x0F) << 8) | yl;
+
+      // Map for landscape rotation (rotation=1)
+      x = rawY;
+      y = 240 - rawX;
+
+      // Clamp to screen bounds
+      x = constrain(x, 0, 319);
+      y = constrain(y, 0, 239);
+
+      lastTouchTime = now;
+      return true;
     }
-    lastTouchTime = now;
-
-    // Get touch data
-    x = touch.data.x;
-    y = touch.data.y;
-
-    // CST816S returns coordinates in portrait mode (240x320)
-    // We're using landscape mode, so we need to rotate
-    // Portrait: x=0-240, y=0-320
-    // Landscape: x=0-320, y=0-240
-    // Rotation 1 (landscape): new_x = y, new_y = 240 - x
-    uint16_t temp_x = y;
-    y = 240 - x;
-    x = temp_x;
-
-    return true;
   }
   return false;
 }
@@ -190,18 +203,17 @@ bool readTouch(uint16_t &x, uint16_t &y) {
 void drawMenu() {
   tft.fillScreen(COLOR_BG);
 
-  // Title
+  // Title - centered for landscape mode (320x240)
   tft.setTextColor(COLOR_ACCENT, COLOR_BG);
   tft.setTextSize(3);
-  tft.setCursor(20, 10);
-  tft.println("Twenty-Four");
-  tft.setCursor(80, 40);
-  tft.println("Times");
+  tft.setTextDatum(TC_DATUM);  // Top center alignment
+  tft.drawString("Twenty-Four", 160, 10);
+  tft.drawString("Times", 160, 40);
 
   tft.setTextSize(1);
   tft.setTextColor(TFT_DARKGREY, COLOR_BG);
-  tft.setCursor(70, 70);
-  tft.println("Select Mode:");
+  tft.drawString("Select Mode:", 160, 70);
+  tft.setTextDatum(TL_DATUM);  // Reset to top-left for buttons
 
   // Menu buttons (4 buttons in 2x2 grid)
   // Button layout: 160x100 each, 10px padding
@@ -493,29 +505,24 @@ void setup() {
   pinMode(TFT_BACKLIGHT, OUTPUT);
   digitalWrite(TFT_BACKLIGHT, HIGH);
 
-  // Initialize I2C for touch
+  // Initialize I2C for touch (CST816S)
   Wire.begin(TOUCH_SDA, TOUCH_SCL);
-
-  // Initialize touch controller
-  touch.begin();
-  Serial.println("Touch controller initialized");
+  Serial.println("I2C initialized for touch controller");
 
   // Initialize TFT
   tft.init();
   tft.setRotation(1);  // Landscape mode (320x240)
   tft.fillScreen(COLOR_BG);
 
-  // Show startup screen
+  // Show startup screen - centered for landscape mode (320x240)
   tft.setTextColor(COLOR_ACCENT, COLOR_BG);
   tft.setTextSize(3);
-  tft.setCursor(20, 80);
-  tft.println("Twenty-Four");
-  tft.setCursor(80, 110);
-  tft.println("Times");
+  tft.setTextDatum(TC_DATUM);  // Top center alignment
+  tft.drawString("Twenty-Four", 160, 80);
+  tft.drawString("Times", 160, 110);
   tft.setTextSize(1);
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(80, 150);
-  tft.println("Initializing...");
+  tft.drawString("Initializing...", 160, 150);
 
   delay(1000);
 
@@ -525,8 +532,8 @@ void setup() {
     tft.fillScreen(COLOR_BG);
     tft.setTextColor(COLOR_ACCENT, COLOR_BG);
     tft.setTextSize(2);
-    tft.setCursor(40, 100);
-    tft.println("ESP-NOW Ready!");
+    tft.setTextDatum(MC_DATUM);  // Middle center alignment
+    tft.drawString("ESP-NOW Ready!", 160, 120);
     delay(1000);
   } else {
     Serial.println("ESP-NOW initialization failed!");
@@ -534,8 +541,8 @@ void setup() {
     tft.fillScreen(TFT_RED);
     tft.setTextColor(TFT_WHITE, TFT_RED);
     tft.setTextSize(2);
-    tft.setCursor(20, 100);
-    tft.println("ESP-NOW FAILED!");
+    tft.setTextDatum(MC_DATUM);  // Middle center alignment
+    tft.drawString("ESP-NOW FAILED!", 160, 120);
 
     while (1) delay(1000);  // Halt
   }
