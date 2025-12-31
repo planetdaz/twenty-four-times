@@ -229,7 +229,7 @@ void setup() {
 
   // Initialize TFT
   tft.init();
-  tft.setRotation(2);  // Landscape mode (320x240)
+  tft.setRotation(1);  // Landscape mode (320x240)
   tft.fillScreen(COLOR_BG);
 
   // Show startup screen
