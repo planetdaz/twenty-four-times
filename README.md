@@ -9,8 +9,15 @@ While rooted in timekeeping, the system is designed as a **general distributed a
 
 The name *Twenty-Four Times* intentionally reflects both:
 
-* the number of clocks
+* the number of clocks in the matrix, which is also the number of hours in a day
 * the multiplication of time, motion, and state across space
+
+### Video Demonstrations
+
+* [On-screen simulation and initial build with custom 3D printed enclosures](https://www.youtube.com/watch?v=c2BB3x_dGME)
+* [Testing master controller with ESP-NOW communication](https://www.youtube.com/watch?v=1ejrj0Ynra4)
+
+![Prototype build showing pixel modules with round LCD displays and 3D printed enclosures](images/twenty-four-times-proto-work%20(4).jpg)
 
 ---
 
@@ -206,7 +213,7 @@ The repository includes:
 
 ## 8. Web-Based Visual Simulator
 
-The repository includes an **HTML + JavaScript simulator** used to:
+The repository includes an **HTML + JavaScript simulator** (`twenty-four-times-simulation.html`) used to:
 
 * prototype layouts
 * test animation ideas
@@ -218,6 +225,8 @@ This simulator:
 * predates hardware completion
 * evolves alongside firmware
 * acts as a reference for animation logic
+
+See the [simulation demo video](https://www.youtube.com/watch?v=c2BB3x_dGME) for examples of the visual output.
 
 ---
 
@@ -270,12 +279,19 @@ This project is not intended as a replica, but as a **technical and conceptual e
 
 > *What happens when time becomes a material for choreography rather than measurement?*
 
-For reference and context, see:
+### Related Projects
 
-* Humans Since 1982 — ClockClock
+* **Humans Since 1982 — ClockClock**
+  The original art installation using physical stepper motors and clock hands
   [https://www.humanssince1982.com/clockclock](https://www.humanssince1982.com/clockclock)
 
+* **Erich Styger — MetaClockClock**
+  An impressive DIY implementation using 120 stepper motors with LED rings, controlled by NXP LPC845 microcontrollers over RS-485. Multiple versions documented with detailed build logs, CNC enclosures, and open source firmware.
+  [https://mcuoneclipse.com/2025/08/03/new-metaclockclock-combining-art-and-technology-in-clocks/](https://mcuoneclipse.com/2025/08/03/new-metaclockclock-combining-art-and-technology-in-clocks/)
 
+---
 
+## 12. License
 
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
