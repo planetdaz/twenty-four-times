@@ -133,8 +133,8 @@ The project supports two ESP32 variants. Both work, but S3 offers better perform
     Pin 4  ── GP1                  GP12 (SPI)    ── Pin 15
     Pin 5  ── GP2                  GP11          ── Pin 14
     Pin 6  ── GP3                  GP10          ── Pin 13  ← TFT_SDA
-    Pin 7  ── GP4  ← TFT_RST       GP9           ── Pin 12
-    Pin 8  ── GP5  ← TFT_CS        GP8           ── Pin 11  ← TFT_SCL
+    Pin 7  ── GP4  ← TFT_RST       GP9           ── Pin 12  ← TFT_SCL
+    Pin 8  ── GP5  ← TFT_CS        GP8           ── Pin 11
     Pin 9  ── GP6  ← TFT_DC        GP7           ── Pin 10
 
     BOTTOM SMD PADS (not used - no SMD soldering required):
@@ -152,7 +152,7 @@ The project supports two ESP32 variants. Both work, but S3 offers better perform
 | Left 7 | GP4 | GPIO4 | Digital I/O | **TFT_RST** | Reset |
 | Left 8 | GP5 | GPIO5 | Digital I/O | **TFT_CS** | Chip Select |
 | Left 9 | GP6 | GPIO6 | Digital I/O | **TFT_DC** | Data/Command |
-| Right 11 | GP8 | GPIO8 | Digital I/O | **TFT_SCL** | Software SPI CLK |
+| Right 12 | GP9 | GPIO9 | Digital I/O | **TFT_SCL** | Software SPI CLK |
 | Right 13 | GP10 | GPIO10 | Digital I/O | **TFT_SDA** | Software SPI MOSI |
 
 **Notes:**
@@ -189,7 +189,7 @@ ESP32-S3-Zero                    GC9A01 Display
 Left Pin 3   (3V3 OUT)    ────>  VCC
 Left Pin 2   (GND)        ────>  GND
 Right Pin 13 (GP10)       ────>  DIN (MOSI)
-Right Pin 11 (GP8)        ────>  CLK (SCK)
+Right Pin 12 (GP9)        ────>  CLK (SCK)
 Left Pin 8   (GP5)        ────>  CS
 Left Pin 9   (GP6)        ────>  DC
 Left Pin 7   (GP4)        ────>  RST
@@ -203,7 +203,7 @@ Left Pin 7   (GP4)        ────>  RST
 The firmware automatically detects the board type and uses appropriate pins:
 
 **ESP32-C3:** Software SPI on GPIO4,5,6,8,10
-**ESP32-S3:** Software SPI on GPIO4,5,6,8,10 (same as C3 for consistency)
+**ESP32-S3:** Software SPI on GPIO4,5,6,9,10 (GP9 for CLK to avoid strapping pin)
 
 Both boards use software SPI with header pins only - no SMD soldering required.
 

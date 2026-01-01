@@ -50,7 +50,7 @@ Pin 7  ── D6                   D7        ── Pin 8
         Left Pin 3   (3V3 OUT) ───────>  VCC
         Left Pin 2   (GND)     ───────>  GND
         Right Pin 13 (GP10)    ───────>  DIN (MOSI)
-        Right Pin 11 (GP8)     ───────>  CLK (SCK)
+        Right Pin 12 (GP9)     ───────>  CLK (SCK)
         Left Pin 8   (GP5)     ───────>  CS
         Left Pin 9   (GP6)     ───────>  DC
         Left Pin 7   (GP4)     ───────>  RST
@@ -69,8 +69,8 @@ Pin 3  ── 3V3 ──> VCC          GP13      ── Pin 16
 Pin 4  ── GP1                  GP12      ── Pin 15
 Pin 5  ── GP2                  GP11      ── Pin 14
 Pin 6  ── GP3                  GP10      ── Pin 13 ──> DIN
-Pin 7  ── GP4 ──> RST          GP9       ── Pin 12
-Pin 8  ── GP5 ──> CS           GP8       ── Pin 11 ──> CLK
+Pin 7  ── GP4 ──> RST          GP9       ── Pin 12 ──> CLK
+Pin 8  ── GP5 ──> CS           GP8       ── Pin 11
 Pin 9  ── GP6 ──> DC           GP7       ── Pin 10
 
 BOTTOM SMD PADS (not used):
@@ -88,7 +88,7 @@ GP14 (Pin 7)
 | **VCC** | Pin 12 (3V3) | Left Pin 3 (3V3 OUT) | 3.3V power |
 | **GND** | Pin 13 (GND) | Left Pin 2 (GND) | Ground |
 | **DIN** | Pin 11 (D10/GPIO10) | Right Pin 13 (GP10) | MOSI/SDA |
-| **CLK** | Pin 9 (D8/GPIO8) | Right Pin 11 (GP8) | SCK/SCL |
+| **CLK** | Pin 9 (D8/GPIO8) | Right Pin 12 (GP9) | SCK/SCL |
 | **CS** | Pin 4 (D3/GPIO5) | Left Pin 8 (GP5) | Chip Select |
 | **DC** | Pin 5 (D4/GPIO6) | Left Pin 9 (GP6) | Data/Command |
 | **RST** | Pin 3 (D2/GPIO4) | Left Pin 7 (GP4) | Reset |
