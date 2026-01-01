@@ -129,38 +129,38 @@ The project supports two ESP32 variants. Both work, but S3 offers better perform
     LEFT HEADER (Pins 1-9)         RIGHT HEADER (Pins 18-10)
     Pin 1  ── 5V                   TX (UART0)    ── Pin 18
     Pin 2  ── GND                  RX (UART0)    ── Pin 17
-    Pin 3  ── 3V3(OUT)             GP13 (SPI)    ── Pin 16  ← TFT_SDA
+    Pin 3  ── 3V3(OUT)             GP13 (SPI)    ── Pin 16
     Pin 4  ── GP1                  GP12 (SPI)    ── Pin 15
     Pin 5  ── GP2                  GP11          ── Pin 14
-    Pin 6  ── GP3                  GP10          ── Pin 13
+    Pin 6  ── GP3                  GP10          ── Pin 13  ← TFT_SDA
     Pin 7  ── GP4  ← TFT_RST       GP9           ── Pin 12
-    Pin 8  ── GP5                  GP8           ── Pin 11
-    Pin 9  ── GP6                  GP7           ── Pin 10
+    Pin 8  ── GP5  ← TFT_CS        GP8           ── Pin 11  ← TFT_SCL
+    Pin 9  ── GP6  ← TFT_DC        GP7           ── Pin 10
 
-    BOTTOM SMD PADS (not part of header):
-    GP16 (Pin 9)  ← TFT_DC
-    GP15 (Pin 8)  ← TFT_CS
-    GP14 (Pin 7)  ← TFT_SCL
+    BOTTOM SMD PADS (not used - no SMD soldering required):
+    GP16 (Pin 9)
+    GP15 (Pin 8)
+    GP14 (Pin 7)
 
     Note: GP21 is used for onboard WS2812 RGB LED (not exposed on header)
 ```
 
-**Pin Mapping (S3 - Hardware SPI):**
+**Pin Mapping (S3 - Software SPI):**
 
 | Physical Pin | Label | GPIO | Function | TFT Connection | Notes |
 |--------------|-------|------|----------|----------------|-------|
 | Left 7 | GP4 | GPIO4 | Digital I/O | **TFT_RST** | Reset |
-| Bottom SMD 8 | GP15 | GPIO15 | SPI3_CS | **TFT_CS** | Hardware SPI |
-| Bottom SMD 9 | GP16 | GPIO16 | Digital I/O | **TFT_DC** | Data/Command |
-| Bottom SMD 7 | GP14 | GPIO14 | SPI3_CLK | **TFT_SCL** | Hardware SPI (up to 80MHz) |
-| Right 16 | GP13 | GPIO13 | SPI3_MOSI | **TFT_SDA** | Hardware SPI |
+| Left 8 | GP5 | GPIO5 | Digital I/O | **TFT_CS** | Chip Select |
+| Left 9 | GP6 | GPIO6 | Digital I/O | **TFT_DC** | Data/Command |
+| Right 11 | GP8 | GPIO8 | Digital I/O | **TFT_SCL** | Software SPI CLK |
+| Right 13 | GP10 | GPIO10 | Digital I/O | **TFT_SDA** | Software SPI MOSI |
 
-**Performance Benefits:**
-- Hardware SPI with DMA support
-- 2× faster display updates (~50-60 FPS vs ~30 FPS)
-- Dual cores allow background tasks
+**Notes:**
+- Uses software SPI (bit-banging) - no SMD soldering required
+- Performance: ~30 FPS (same as C3)
+- All pins accessible via headers
+- Dual cores still allow background tasks
 - 2MB PSRAM for larger buffers or future features
-- Castellated edges for SMD mounting
 
 ---
 
@@ -186,13 +186,13 @@ Pin 3  (D2/GPIO4)         ────>  RST
 ```
 ESP32-S3-Zero                    GC9A01 Display
 ─────────────                    ──────────────
-Left Pin 3      (3V3 OUT) ────>  VCC
-Left Pin 2      (GND)     ────>  GND
-Right Pin 16    (GP13)    ────>  DIN (MOSI)
-Bottom SMD Pin 7 (GP14)   ────>  CLK (SCK)
-Bottom SMD Pin 8 (GP15)   ────>  CS
-Bottom SMD Pin 9 (GP16)   ────>  DC
-Left Pin 7      (GP4)     ────>  RST
+Left Pin 3   (3V3 OUT)    ────>  VCC
+Left Pin 2   (GND)        ────>  GND
+Right Pin 13 (GP10)       ────>  DIN (MOSI)
+Right Pin 11 (GP8)        ────>  CLK (SCK)
+Left Pin 8   (GP5)        ────>  CS
+Left Pin 9   (GP6)        ────>  DC
+Left Pin 7   (GP4)        ────>  RST
                                  BL ──> VCC (or PWM for dimming)
 ```
 
@@ -202,8 +202,10 @@ Left Pin 7      (GP4)     ────>  RST
 
 The firmware automatically detects the board type and uses appropriate pins:
 
-**ESP32-C3:** Software SPI on GPIO4,5,6,8,10  
-**ESP32-S3:** Hardware SPI on GPIO4,13,14,15,16
+**ESP32-C3:** Software SPI on GPIO4,5,6,8,10
+**ESP32-S3:** Software SPI on GPIO4,5,6,8,10 (same as C3 for consistency)
+
+Both boards use software SPI with header pins only - no SMD soldering required.
 
 See `src/main.cpp` for implementation details.
 

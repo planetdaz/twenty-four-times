@@ -47,13 +47,13 @@ Pin 7  ── D6                   D7        ── Pin 8
         ESP32-S3-Zero                    GC9A01 Display
         ═════════════                    ══════════════
 
-        Left Pin 3      (3V3 OUT) ────>  VCC
-        Left Pin 2      (GND)     ────>  GND
-        Right Pin 16    (GP13)    ────>  DIN (MOSI)
-        Bottom SMD Pin 7 (GP14)   ────>  CLK (SCK)
-        Bottom SMD Pin 8 (GP15)   ────>  CS
-        Bottom SMD Pin 9 (GP16)   ────>  DC
-        Left Pin 7      (GP4)     ────>  RST
+        Left Pin 3   (3V3 OUT) ───────>  VCC
+        Left Pin 2   (GND)     ───────>  GND
+        Right Pin 13 (GP10)    ───────>  DIN (MOSI)
+        Right Pin 11 (GP8)     ───────>  CLK (SCK)
+        Left Pin 8   (GP5)     ───────>  CS
+        Left Pin 9   (GP6)     ───────>  DC
+        Left Pin 7   (GP4)     ───────>  RST
                                          BL ──> VCC
 ```
 
@@ -65,21 +65,19 @@ Pin 7  ── D6                   D7        ── Pin 8
 LEFT HEADER (1-9)              RIGHT HEADER (18-10)
 Pin 1  ── 5V                   TX        ── Pin 18
 Pin 2  ── GND ──> GND          RX        ── Pin 17
-Pin 3  ── 3V3 ──> VCC          GP13 ⭐   ── Pin 16 ──> DIN
+Pin 3  ── 3V3 ──> VCC          GP13      ── Pin 16
 Pin 4  ── GP1                  GP12      ── Pin 15
 Pin 5  ── GP2                  GP11      ── Pin 14
-Pin 6  ── GP3                  GP10      ── Pin 13
-Pin 7  ── GP4 ──> RST ⭐       GP9       ── Pin 12
-Pin 8  ── GP5                  GP8       ── Pin 11
-Pin 9  ── GP6                  GP7       ── Pin 10
+Pin 6  ── GP3                  GP10      ── Pin 13 ──> DIN
+Pin 7  ── GP4 ──> RST          GP9       ── Pin 12
+Pin 8  ── GP5 ──> CS           GP8       ── Pin 11 ──> CLK
+Pin 9  ── GP6 ──> DC           GP7       ── Pin 10
 
-BOTTOM SMD PADS (not part of header):
-GP16 ⭐ (Pin 9)  ──> DC
-GP15 ⭐ (Pin 8)  ──> CS
-GP14 ⭐ (Pin 7)  ──> CLK
+BOTTOM SMD PADS (not used):
+GP16 (Pin 9)
+GP15 (Pin 8)
+GP14 (Pin 7)
 ```
-
-⭐ = Hardware SPI pins (faster performance)
 
 ---
 
@@ -89,10 +87,10 @@ GP14 ⭐ (Pin 7)  ──> CLK
 |------------|---------------|---------------|-------|
 | **VCC** | Pin 12 (3V3) | Left Pin 3 (3V3 OUT) | 3.3V power |
 | **GND** | Pin 13 (GND) | Left Pin 2 (GND) | Ground |
-| **DIN** | Pin 11 (D10/GPIO10) | Right Pin 16 (GP13) | MOSI/SDA |
-| **CLK** | Pin 9 (D8/GPIO8) | Bottom SMD Pin 7 (GP14) | SCK/SCL |
-| **CS** | Pin 4 (D3/GPIO5) | Bottom SMD Pin 8 (GP15) | Chip Select |
-| **DC** | Pin 5 (D4/GPIO6) | Bottom SMD Pin 9 (GP16) | Data/Command |
+| **DIN** | Pin 11 (D10/GPIO10) | Right Pin 13 (GP10) | MOSI/SDA |
+| **CLK** | Pin 9 (D8/GPIO8) | Right Pin 11 (GP8) | SCK/SCL |
+| **CS** | Pin 4 (D3/GPIO5) | Left Pin 8 (GP5) | Chip Select |
+| **DC** | Pin 5 (D4/GPIO6) | Left Pin 9 (GP6) | Data/Command |
 | **RST** | Pin 3 (D2/GPIO4) | Left Pin 7 (GP4) | Reset |
 | **BL** | VCC (always on) | VCC (always on) | Backlight |
 
@@ -102,17 +100,16 @@ GP14 ⭐ (Pin 7)  ──> CLK
 
 ### ESP32-C3 (XIAO)
 - ✅ Compact XIAO form factor
-- ✅ Works with existing wiring
-- ⚠️ Software SPI (bit-banging)
+- ✅ Software SPI (bit-banging)
 - ⚠️ GPIO8 is strapping pin (safe for SPI CLK)
 - 📊 Performance: ~30 FPS
 
 ### ESP32-S3-Zero
-- ✅ Hardware SPI with DMA
+- ✅ Software SPI (header pins only - no SMD soldering!)
 - ✅ Dual cores (240 MHz each)
 - ✅ 2MB PSRAM for future features
 - ✅ Castellated edges for SMD mounting
-- 📊 Performance: ~50-60 FPS (2× faster!)
+- 📊 Performance: ~30 FPS (same as C3)
 
 ---
 

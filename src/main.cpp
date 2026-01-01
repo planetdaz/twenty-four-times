@@ -33,17 +33,17 @@ GFXcanvas16 canvas(240, 240);
 
 #elif defined(CONFIG_IDF_TARGET_ESP32S3) || defined(ARDUINO_ESP32S3_DEV)
   // ----- ESP32-S3-Zero (Waveshare) -----
-  // Uses hardware SPI3 with DMA support
-  // Performance: ~50-60 FPS (2x faster than C3)
+  // Uses software SPI on header pins only (no SMD soldering required)
+  // Performance: ~30 FPS (same as C3)
   #define BOARD_NAME "ESP32-S3-Zero"
   #define tft_rst  4   // GPIO4 / GP4 / left header pin 7
-  #define tft_cs   15  // GPIO15 / GP15 / bottom SMD pad 8 - Hardware SPI3_CS
-  #define tft_dc   16  // GPIO16 / GP16 / bottom SMD pad 9
-  #define tft_scl  14  // GPIO14 / GP14 / bottom SMD pad 7 - Hardware SPI3_CLK (up to 80MHz)
-  #define tft_sda  13  // GPIO13 / GP13 / right header pin 16 - Hardware SPI3_MOSI
+  #define tft_cs   5   // GPIO5 / GP5 / left header pin 8
+  #define tft_dc   6   // GPIO6 / GP6 / left header pin 9
+  #define tft_scl  8   // GPIO8 / GP8 / right header pin 11
+  #define tft_sda  10  // GPIO10 / GP10 / right header pin 13
 
-  // Hardware SPI constructor (uses default SPI pins, only need CS/DC/RST)
-  Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
+  // Software SPI constructor (custom pins) - MUST specify all 5 pins for bit-banging
+  Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_sda, tft_scl, tft_rst);
 
 #else
   #error "Unsupported board! Please use ESP32-C3 or ESP32-S3."
@@ -665,15 +665,10 @@ void setup() {
   Serial.println(" bytes (115,200 bytes)");
 
   // ---- SPI ----
-  #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_XIAO_ESP32C3)
-    // ESP32-C3: Manually initialize SPI with custom pins
-    // SPI.begin(SCK, MISO, MOSI, SS) - MISO=-1 since we don't need it for write-only TFT
-    SPI.begin(tft_scl, -1, tft_sda);
-    Serial.println("SPI initialized with custom pins (software SPI)");
-  #else
-    // ESP32-S3: Use default hardware SPI pins (no need to call SPI.begin)
-    Serial.println("Using default hardware SPI pins");
-  #endif
+  // Both C3 and S3 use software SPI with custom pins
+  // SPI.begin(SCK, MISO, MOSI, SS) - MISO=-1 since we don't need it for write-only TFT
+  SPI.begin(tft_scl, -1, tft_sda);
+  Serial.println("SPI initialized with custom pins (software SPI)");
 
   // ---- TFT ----
   Serial.println("Initializing TFT...");
