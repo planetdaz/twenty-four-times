@@ -11,19 +11,46 @@
 // ===== PIXEL CONFIGURATION =====
 // This pixel's ID (0-23). In production, this would be stored in NVS.
 // For now, we'll set it via serial command or hardcode different values per device.
-#define PIXEL_ID 2  // Change this for each device (0, 1, 2, etc.)
+#define PIXEL_ID 3  // Change this for each device (0, 1, 2, etc.)
 
-// 240x240 RGB565 buffer (~115 KB)
-GFXcanvas16 canvas(240, 240);
+// 240x240 RGB565 buffer (~115 KB) - allocated in setup() to avoid boot crash
+GFXcanvas16* canvas = nullptr;
 
-// ---- TFT pin names ----
-#define tft_rst  4   // D2 / GPIO4 / pin 3
-#define tft_cs   5   // D3 / GPIO5 / pin 4
-#define tft_dc   6   // D4 / GPIO6 / pin 5
-#define tft_scl  8   // D8 / GPIO8 / pin 9
-#define tft_sda  10  // D10 / GPIO10 / pin 11
+// ===== BOARD-SPECIFIC PIN CONFIGURATION =====
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_XIAO_ESP32C3)
+  // ----- XIAO ESP32-C3 -----
+  // Uses software SPI on custom pins (initialized manually in setup)
+  // Performance: ~30 FPS
+  #define BOARD_NAME "XIAO ESP32-C3"
+  #define tft_rst  4   // D2 / GPIO4 / pin 3
+  #define tft_cs   5   // D3 / GPIO5 / pin 4
+  #define tft_dc   6   // D4 / GPIO6 / pin 5
+  #define tft_scl  8   // D8 / GPIO8 / pin 9 (strapping pin - safe for SPI CLK)
+  #define tft_sda  10  // D10 / GPIO10 / pin 11
 
-Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
+  // 3-parameter constructor - SPI pins set manually in setup()
+  Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
+
+#elif defined(CONFIG_IDF_TARGET_ESP32S3) || defined(ARDUINO_ESP32S3_DEV)
+  // ----- ESP32-S3-Zero (Waveshare) -----
+  // Uses HARDWARE SPI2 (FSPI) with DEFAULT pins
+  // ESP32-S3 default FSPI: MOSI=11, MISO=13, CLK=12, CS=10
+  // We'll use CLK=12 (default) instead of 13 to avoid remapping issues
+  #define BOARD_NAME "ESP32-S3-Zero"
+  #define tft_rst  4   // GPIO4 / GP4 / left header pin 7 (any GPIO)
+  #define tft_cs   10  // GPIO10 / GP10 / right header pin 13 - FSPI_CS (default)
+  #define tft_dc   6   // GPIO6 / GP6 / left header pin 9 (any GPIO)
+  #define tft_scl  12  // GPIO12 / GP12 / right header pin 15 - FSPI_CLK (default!)
+  #define tft_sda  11  // GPIO11 / GP11 / right header pin 14 - FSPI_MOSI (default)
+
+  #define USE_HARDWARE_SPI 1
+
+  // 3-parameter constructor for hardware SPI - uses default SPI pins
+  Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
+
+#else
+  #error "Unsupported board! Please use ESP32-C3 or ESP32-S3."
+#endif
 
 // ---- Display geometry ----
 const int DISPLAY_WIDTH = 240;
@@ -571,20 +598,28 @@ void drawHand(float cx, float cy, float angleDeg, float length, float thickness,
   float y4 = endY - sin(perpRad) * halfThick;
 
   // Draw two triangles to form rectangle
-  canvas.fillTriangle(x1, y1, x2, y2, x3, y3, color);
-  canvas.fillTriangle(x2, y2, x3, y3, x4, y4, color);
+  canvas->fillTriangle(x1, y1, x2, y2, x3, y3, color);
+  canvas->fillTriangle(x2, y2, x3, y3, x4, y4, color);
 
   // Add rounded caps at both ends
-  canvas.fillCircle(cx, cy, (int)halfThick, color);      // Base cap
-  canvas.fillCircle(endX, endY, (int)halfThick, color);  // Tip cap
+  canvas->fillCircle(cx, cy, (int)halfThick, color);      // Base cap
+  canvas->fillCircle(endX, endY, (int)halfThick, color);  // Tip cap
 }
 
 void setup() {
   Serial.begin(115200);
   delay(200);
 
+  // ---- Board Identification ----
+  Serial.println("\n========== TWENTY-FOUR TIMES - PIXEL NODE ==========");
+  Serial.print("Board: ");
+  Serial.println(BOARD_NAME);
+  Serial.print("Pixel ID: ");
+  Serial.println(PIXEL_ID);
+  Serial.println("====================================================\n");
+
   // ---- Memory Statistics ----
-  Serial.println("\n========== MEMORY DEBUG INFO ==========");
+  Serial.println("========== MEMORY DEBUG INFO ==========");
   Serial.print("Free heap: ");
   Serial.print(ESP.getFreeHeap());
   Serial.println(" bytes");
@@ -601,13 +636,17 @@ void setup() {
   Serial.print(ESP.getMaxAllocHeap());
   Serial.println(" bytes");
   
-  Serial.print("Free PSRAM: ");
-  Serial.print(ESP.getFreePsram());
-  Serial.println(" bytes");
-  
-  Serial.print("Total PSRAM: ");
-  Serial.print(ESP.getPsramSize());
-  Serial.println(" bytes");
+  #ifdef BOARD_HAS_PSRAM
+    Serial.print("Free PSRAM: ");
+    Serial.print(ESP.getFreePsram());
+    Serial.println(" bytes");
+
+    Serial.print("Total PSRAM: ");
+    Serial.print(ESP.getPsramSize());
+    Serial.println(" bytes");
+  #else
+    Serial.println("PSRAM: Not available");
+  #endif
   
   Serial.print("Chip model: ");
   Serial.println(ESP.getChipModel());
@@ -633,25 +672,46 @@ void setup() {
   Serial.println(" bytes (115,200 bytes)");
 
   // ---- SPI ----
-  // ESP32-C3 doesn't have default SPI pins, so we specify them explicitly
-  // SPI.begin(SCK, MISO, MOSI, SS) - MISO=-1 since we don't need it for write-only TFT
-  SPI.begin(tft_scl, -1, tft_sda);
+  #ifdef USE_HARDWARE_SPI
+    // ESP32-S3: Use default FSPI pins (no remapping needed)
+    SPI.begin();  // Uses default pins: CLK=12, MOSI=11, MISO=13, CS=10
+    Serial.println("SPI initialized with default FSPI pins (hardware SPI)");
+  #else
+    // Software SPI
+    SPI.begin(tft_scl, -1, tft_sda);
+    Serial.println("SPI initialized with custom pins (software SPI)");
+  #endif
+
+  // ---- Canvas ----
+  Serial.println("Allocating canvas buffer (115,200 bytes)...");
+  canvas = new GFXcanvas16(240, 240);
+  if (!canvas) {
+    Serial.println("ERROR: Failed to allocate canvas!");
+    while(1) delay(1000);
+  }
+  Serial.print("Canvas allocated! Free heap: ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes");
 
   // ---- TFT ----
   Serial.println("Initializing TFT...");
-  tft.begin();
+  #ifdef USE_HARDWARE_SPI
+    // Hardware SPI: Use high frequency (80MHz max for ESP32-S3 FSPI)
+    tft.begin(80000000);  // 80 MHz
+    Serial.println("TFT initialized at 80 MHz (hardware SPI)");
+  #else
+    // Software SPI: frequency parameter is ignored
+    tft.begin();
+    Serial.println("TFT initialized (software SPI)");
+  #endif
   tft.setRotation(0);
-  Serial.println("TFT initialized!");
 
   Serial.print("Free heap after TFT init: ");
   Serial.print(ESP.getFreeHeap());
   Serial.println(" bytes");
 
-  Serial.println("\nNote: Canvas buffer (115,200 bytes) is allocated statically,");
-  Serial.println("      not from heap. This is good - no heap fragmentation!");
-
   // Clear canvas to white
-  canvas.fillScreen(GC9A01A_WHITE);
+  canvas->fillScreen(GC9A01A_WHITE);
 
   Serial.println("\nSetup complete!");
 
@@ -691,19 +751,19 @@ void loop() {
   // ---- Identify Mode Display ----
   // If in identify mode, show pixel ID and skip normal rendering
   if (identifyMode) {
-    canvas.fillScreen(GC9A01A_BLUE);
+    canvas->fillScreen(GC9A01A_BLUE);
 
     // Draw large pixel ID in the center
-    canvas.setTextColor(GC9A01A_WHITE);
-    canvas.setTextSize(15);  // Very large text
+    canvas->setTextColor(GC9A01A_WHITE);
+    canvas->setTextSize(15);  // Very large text
 
     // Center the text (approximate positioning for single/double digit)
     int xPos = (PIXEL_ID < 10) ? 85 : 55;
-    canvas.setCursor(xPos, 90);
-    canvas.print(PIXEL_ID);
+    canvas->setCursor(xPos, 90);
+    canvas->print(PIXEL_ID);
 
     // Present identify frame to display
-    tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
     // Small delay and return (skip normal rendering)
     delay(100);
@@ -713,17 +773,17 @@ void loop() {
   // ---- Error State Display ----
   // If in error state, just show red screen with "!" and skip normal rendering
   if (errorState) {
-    canvas.fillScreen(GC9A01A_RED);
+    canvas->fillScreen(GC9A01A_RED);
 
     // Draw large "!" in the center
     // We'll draw it manually since we want it large and centered
-    canvas.setTextColor(GC9A01A_WHITE);
-    canvas.setTextSize(10);  // Large text
-    canvas.setCursor(95, 90);  // Roughly centered for "!"
-    canvas.print("!");
+    canvas->setTextColor(GC9A01A_WHITE);
+    canvas->setTextSize(10);  // Large text
+    canvas->setCursor(95, 90);  // Roughly centered for "!"
+    canvas->print("!");
 
     // Present error frame to display
-    tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
     // Small delay and return (skip normal rendering)
     delay(100);
@@ -768,10 +828,10 @@ void loop() {
 
   // ---- Rendering ----
   // Clear canvas with current background color
-  canvas.fillScreen(colors.currentBg);
+  canvas->fillScreen(colors.currentBg);
 
   // Optional: Draw reference circle to show the max radius
-  // canvas.drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(200, 200, 200));
+  // canvas->drawCircle(CENTER_X, CENTER_Y, MAX_RADIUS - 1, tft.color565(200, 200, 200));
 
   // Draw the three clock hands with opacity blending
   // Blend foreground color with background based on opacity
@@ -785,10 +845,10 @@ void loop() {
   drawHand(CENTER_X, CENTER_Y, hand3.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
   // Draw center dot (always full opacity foreground color)
-  canvas.fillCircle(CENTER_X, CENTER_Y, 4, colors.currentFg);
+  canvas->fillCircle(CENTER_X, CENTER_Y, 4, colors.currentFg);
 
   // Present frame to display
-  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+  tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
   // ---- FPS tracking ----
   fpsFrames++;

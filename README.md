@@ -44,34 +44,22 @@ A single master controller coordinates all pixels via a **simple broadcast proto
 
 ## 2. Hardware Specification
 
-### 2.1 Display
+### Display
 
-* Product link:
-  [https://www.amazon.com/YELUFT-Interface-Self-Luminous-Raspberry-Pre-Soldered/dp/B0F21J42WD](https://www.amazon.com/YELUFT-Interface-Self-Luminous-Raspberry-Pre-Soldered/dp/B0F21J42WD)
+* **1.28" Round IPS LCD** (GC9A01 controller)
+* **240 × 240 RGB565** resolution
+* SPI interface (write-only)
 
-| Property    | Specification       |
-| ----------- | ------------------- |
-| Type        | 1.28" Round IPS LCD |
-| Controller  | GC9A01              |
-| Resolution  | 240 × 240           |
-| Interface   | SPI (write-only)    |
-| Color Depth | RGB565              |
+### Microcontroller (Per Pixel)
 
----
+* **ESP32-S3** (recommended) or **ESP32-C3** (tested)
+* Dual-core 240 MHz (S3) or single-core 160 MHz (C3)
+* Compact form factor with castellated edges
+* Hardware SPI support (S3) for optimal performance
 
-### 2.2 Microcontroller (Per Pixel)
+> **Note:** Both C3 and S3 are supported. S3 is recommended for production due to dual cores, PSRAM, and hardware SPI (50-60 FPS vs 30 FPS on C3).
 
-* Product link:
-  [https://www.amazon.com/dp/B0D2CY4Y5H](https://www.amazon.com/dp/B0D2CY4Y5H)
-
-| Property    | Specification                                              |
-| ----------- | ---------------------------------------------------------- |
-| MCU         | **ESP32-S3**                                               |
-| CPU         | Dual core, 240 MHz                                         |
-| Rationale   | Best performance headroom for animation math and buffering |
-| Form Factor | Small enough to fit inside each pixel enclosure            |
-
-> ESP32-C3 was evaluated and proven viable, but ESP32-S3 is selected for its dual core and PSRAM, to allow for concurrent tasks and larger framebuffers.
+📄 **See [HARDWARE.md](HARDWARE.md) for complete specifications, pinouts, wiring diagrams, and assembly notes.**
 
 ---
 
