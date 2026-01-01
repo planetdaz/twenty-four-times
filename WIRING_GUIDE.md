@@ -49,9 +49,9 @@ Pin 7  ── D6                   D7        ── Pin 8
 
         Left Pin 3   (3V3 OUT) ───────>  VCC
         Left Pin 2   (GND)     ───────>  GND
-        Right Pin 14 (GP11)    ───────>  DIN (MOSI)  ← FSPI_MOSI
-        Right Pin 16 (GP13)    ───────>  CLK (SCK)   ← FSPI_CLK @ 80MHz
-        Right Pin 13 (GP10)    ───────>  CS          ← FSPI_CS
+        Right Pin 14 (GP11)    ───────>  DIN (MOSI)  ← FSPI_MOSI (default)
+        Right Pin 15 (GP12)    ───────>  CLK (SCK)   ← FSPI_CLK @ 80MHz (default)
+        Right Pin 13 (GP10)    ───────>  CS          ← FSPI_CS (default)
         Left Pin 9   (GP6)     ───────>  DC
         Left Pin 7   (GP4)     ───────>  RST
                                          BL ──> VCC
@@ -65,8 +65,8 @@ Pin 7  ── D6                   D7        ── Pin 8
 LEFT HEADER (1-9)              RIGHT HEADER (18-10)
 Pin 1  ── 5V                   TX        ── Pin 18
 Pin 2  ── GND ──> GND          RX        ── Pin 17
-Pin 3  ── 3V3 ──> VCC          GP13 ⭐   ── Pin 16 ──> CLK (FSPI_CLK)
-Pin 4  ── GP1                  GP12      ── Pin 15
+Pin 3  ── 3V3 ──> VCC          GP13      ── Pin 16
+Pin 4  ── GP1                  GP12 ⭐   ── Pin 15 ──> CLK (FSPI_CLK)
 Pin 5  ── GP2                  GP11 ⭐   ── Pin 14 ──> DIN (FSPI_MOSI)
 Pin 6  ── GP3                  GP10 ⭐   ── Pin 13 ──> CS (FSPI_CS)
 Pin 7  ── GP4 ──> RST          GP9       ── Pin 12
@@ -79,7 +79,7 @@ GP15 (Pin 8)
 GP14 (Pin 7)
 ```
 
-⭐ = Hardware SPI2 (FSPI) pins @ 80MHz
+⭐ = Hardware SPI2 (FSPI) default pins @ 80MHz
 
 ---
 
@@ -89,9 +89,9 @@ GP14 (Pin 7)
 |------------|---------------|---------------|-------|
 | **VCC** | Pin 12 (3V3) | Left Pin 3 (3V3 OUT) | 3.3V power |
 | **GND** | Pin 13 (GND) | Left Pin 2 (GND) | Ground |
-| **DIN** | Pin 11 (D10/GPIO10) | Right Pin 14 (GP11) | MOSI/SDA (FSPI_MOSI on S3) |
-| **CLK** | Pin 9 (D8/GPIO8) | Right Pin 16 (GP13) | SCK/SCL (FSPI_CLK @ 80MHz on S3) |
-| **CS** | Pin 4 (D3/GPIO5) | Right Pin 13 (GP10) | Chip Select (FSPI_CS on S3) |
+| **DIN** | Pin 11 (D10/GPIO10) | Right Pin 14 (GP11) | MOSI/SDA (FSPI_MOSI default on S3) |
+| **CLK** | Pin 9 (D8/GPIO8) | Right Pin 15 (GP12) | SCK/SCL (FSPI_CLK @ 80MHz default on S3) |
+| **CS** | Pin 4 (D3/GPIO5) | Right Pin 13 (GP10) | Chip Select (FSPI_CS default on S3) |
 | **DC** | Pin 5 (D4/GPIO6) | Left Pin 9 (GP6) | Data/Command |
 | **RST** | Pin 3 (D2/GPIO4) | Left Pin 7 (GP4) | Reset |
 | **BL** | VCC (always on) | VCC (always on) | Backlight |

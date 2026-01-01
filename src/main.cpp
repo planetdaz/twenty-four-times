@@ -11,7 +11,7 @@
 // ===== PIXEL CONFIGURATION =====
 // This pixel's ID (0-23). In production, this would be stored in NVS.
 // For now, we'll set it via serial command or hardcode different values per device.
-#define PIXEL_ID 2  // Change this for each device (0, 1, 2, etc.)
+#define PIXEL_ID 3  // Change this for each device (0, 1, 2, etc.)
 
 // 240x240 RGB565 buffer (~115 KB) - allocated in setup() to avoid boot crash
 GFXcanvas16* canvas = nullptr;
@@ -33,19 +33,19 @@ GFXcanvas16* canvas = nullptr;
 
 #elif defined(CONFIG_IDF_TARGET_ESP32S3) || defined(ARDUINO_ESP32S3_DEV)
   // ----- ESP32-S3-Zero (Waveshare) -----
-  // Uses HARDWARE SPI2 (FSPI) on header pins - with DMA support!
-  // Performance: ~50-60 FPS (2x faster than software SPI)
-  // All pins on headers - no SMD soldering required!
+  // Uses HARDWARE SPI2 (FSPI) with DEFAULT pins
+  // ESP32-S3 default FSPI: MOSI=11, MISO=13, CLK=12, CS=10
+  // We'll use CLK=12 (default) instead of 13 to avoid remapping issues
   #define BOARD_NAME "ESP32-S3-Zero"
   #define tft_rst  4   // GPIO4 / GP4 / left header pin 7 (any GPIO)
-  #define tft_cs   10  // GPIO10 / GP10 / right header pin 13 - FSPI_CS
+  #define tft_cs   10  // GPIO10 / GP10 / right header pin 13 - FSPI_CS (default)
   #define tft_dc   6   // GPIO6 / GP6 / left header pin 9 (any GPIO)
-  #define tft_scl  13  // GPIO13 / GP13 / right header pin 16 - FSPI_CLK
-  #define tft_sda  11  // GPIO11 / GP11 / right header pin 14 - FSPI_MOSI
+  #define tft_scl  12  // GPIO12 / GP12 / right header pin 15 - FSPI_CLK (default!)
+  #define tft_sda  11  // GPIO11 / GP11 / right header pin 14 - FSPI_MOSI (default)
 
   #define USE_HARDWARE_SPI 1
 
-  // 3-parameter constructor for hardware SPI - SPI.begin() called in setup()
+  // 3-parameter constructor for hardware SPI - uses default SPI pins
   Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
 
 #else
@@ -672,11 +672,10 @@ void setup() {
   Serial.println(" bytes (115,200 bytes)");
 
   // ---- SPI ----
-  // SPI.begin(SCK, MISO, MOSI, SS) - MISO=-1 since we don't need it for write-only TFT
   #ifdef USE_HARDWARE_SPI
-    // ESP32-S3: Hardware SPI2 (FSPI) with DMA support
-    SPI.begin(tft_scl, -1, tft_sda, tft_cs);
-    Serial.println("SPI initialized with FSPI hardware pins (DMA enabled)");
+    // ESP32-S3: Use default FSPI pins (no remapping needed)
+    SPI.begin();  // Uses default pins: CLK=12, MOSI=11, MISO=13, CS=10
+    Serial.println("SPI initialized with default FSPI pins (hardware SPI)");
   #else
     // Software SPI
     SPI.begin(tft_scl, -1, tft_sda);

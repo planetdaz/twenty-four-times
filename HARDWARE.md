@@ -129,8 +129,8 @@ The project supports two ESP32 variants. Both work, but S3 offers better perform
     LEFT HEADER (Pins 1-9)         RIGHT HEADER (Pins 18-10)
     Pin 1  ── 5V                   TX (UART0)    ── Pin 18
     Pin 2  ── GND                  RX (UART0)    ── Pin 17
-    Pin 3  ── 3V3(OUT)             GP13 (FSPI)   ── Pin 16  ← TFT_SCL
-    Pin 4  ── GP1                  GP12 (FSPI)   ── Pin 15
+    Pin 3  ── 3V3(OUT)             GP13          ── Pin 16
+    Pin 4  ── GP1                  GP12 (FSPI)   ── Pin 15  ← TFT_SCL
     Pin 5  ── GP2                  GP11 (FSPI)   ── Pin 14  ← TFT_SDA
     Pin 6  ── GP3                  GP10 (FSPI)   ── Pin 13  ← TFT_CS
     Pin 7  ── GP4  ← TFT_RST       GP9           ── Pin 12
@@ -150,10 +150,10 @@ The project supports two ESP32 variants. Both work, but S3 offers better perform
 | Physical Pin | Label | GPIO | Function | TFT Connection | Notes |
 |--------------|-------|------|----------|----------------|-------|
 | Left 7 | GP4 | GPIO4 | Digital I/O | **TFT_RST** | Reset |
-| Right 13 | GP10 | GPIO10 | FSPI_CS | **TFT_CS** | Hardware SPI CS |
+| Right 13 | GP10 | GPIO10 | FSPI_CS | **TFT_CS** | Hardware SPI CS (default) |
 | Left 9 | GP6 | GPIO6 | Digital I/O | **TFT_DC** | Data/Command |
-| Right 16 | GP13 | GPIO13 | FSPI_CLK | **TFT_SCL** | Hardware SPI CLK @ 80MHz |
-| Right 14 | GP11 | GPIO11 | FSPI_MOSI | **TFT_SDA** | Hardware SPI MOSI |
+| Right 15 | GP12 | GPIO12 | FSPI_CLK | **TFT_SCL** | Hardware SPI CLK @ 80MHz (default) |
+| Right 14 | GP11 | GPIO11 | FSPI_MOSI | **TFT_SDA** | Hardware SPI MOSI (default) |
 
 **Notes:**
 - Uses hardware SPI2 (FSPI) @ 80MHz - no SMD soldering required!
@@ -188,9 +188,9 @@ ESP32-S3-Zero                    GC9A01 Display
 ─────────────                    ──────────────
 Left Pin 3   (3V3 OUT)    ────>  VCC
 Left Pin 2   (GND)        ────>  GND
-Right Pin 14 (GP11)       ────>  DIN (MOSI)  ← FSPI_MOSI
-Right Pin 16 (GP13)       ────>  CLK (SCK)   ← FSPI_CLK @ 80MHz
-Right Pin 13 (GP10)       ────>  CS          ← FSPI_CS
+Right Pin 14 (GP11)       ────>  DIN (MOSI)  ← FSPI_MOSI (default)
+Right Pin 15 (GP12)       ────>  CLK (SCK)   ← FSPI_CLK @ 80MHz (default)
+Right Pin 13 (GP10)       ────>  CS          ← FSPI_CS (default)
 Left Pin 9   (GP6)        ────>  DC
 Left Pin 7   (GP4)        ────>  RST
                                  BL ──> VCC (or PWM for dimming)
@@ -203,7 +203,7 @@ Left Pin 7   (GP4)        ────>  RST
 The firmware automatically detects the board type and uses appropriate pins:
 
 **ESP32-C3:** Software SPI on GPIO4,5,6,8,10
-**ESP32-S3:** Hardware SPI2 (FSPI) on GPIO4,6,10,11,13 @ 80MHz
+**ESP32-S3:** Hardware SPI2 (FSPI) on GPIO4,6,10,11,12 @ 80MHz (default FSPI pins)
 
 Both boards use header pins only - no SMD soldering required.
 
