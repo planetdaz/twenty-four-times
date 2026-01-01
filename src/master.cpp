@@ -4,17 +4,50 @@
 #include <TFT_eSPI.h>
 #include <ESPNowComm.h>
 
-// ===== MASTER CONTROLLER FOR CYD (Capacitive Touch) =====
+// ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
 // and broadcasts synchronized commands to all pixel displays via ESP-NOW
+// Supports both capacitive and resistive touch versions
 
-// ===== BOARD CONFIGURATION =====
-#define TFT_BACKLIGHT 27
-#define TOUCH_SDA 33
-#define TOUCH_SCL 32
-#define TOUCH_INT 21
-#define TOUCH_RST 25
-#define CST816S_ADDR 0x15
+// ===== BOARD-SPECIFIC CONFIGURATION =====
+#if defined(BOARD_CYD_RESISTIVE)
+  // ESP32-2432S028R (E32R28T) with XPT2046 Resistive Touch
+  // Touch uses SEPARATE SPI bus from display!
+  // Touch SPI: SCLK=25, MOSI=32, MISO=39, CS=33, IRQ=36
+  #include <XPT2046_Touchscreen.h>
+
+  #define TOUCH_CS   33
+  #define TOUCH_IRQ  36
+  #define TOUCH_SCLK 25
+  #define TOUCH_MOSI 32
+  #define TOUCH_MISO 39
+  #define TFT_BACKLIGHT 21
+  #define BOARD_NAME "ESP32-2432S028R (Resistive)"
+
+  // Touch calibration values (adjust for your specific board)
+  #define TOUCH_MIN_X 300
+  #define TOUCH_MAX_X 3900
+  #define TOUCH_MIN_Y 300
+  #define TOUCH_MAX_Y 3900
+
+  // Create second SPI bus for touch
+  SPIClass touchSPI(HSPI);
+  XPT2046_Touchscreen ts(TOUCH_CS, TOUCH_IRQ);
+
+#elif defined(BOARD_CYD_CAPACITIVE)
+  // JC2432W328C (Guition) with CST816S Capacitive Touch (I2C)
+  // Official pin config from: https://github.com/rzeldent/platformio-espressif32-sunton
+  #define TOUCH_SDA 33
+  #define TOUCH_SCL 32
+  #define TOUCH_INT 21
+  #define TOUCH_RST 25
+  #define TFT_BACKLIGHT 27
+  #define CST816S_ADDR 0x15
+  #define BOARD_NAME "JC2432W328C (Capacitive)"
+
+#else
+  #error "No board defined! Use -DBOARD_CYD_RESISTIVE or -DBOARD_CYD_CAPACITIVE"
+#endif
 
 // ===== DISPLAY SETUP =====
 TFT_eSPI tft = TFT_eSPI();
@@ -176,7 +209,7 @@ void sendPing();
 
 // ===== FUNCTIONS =====
 
-// Read touch input (CST816S capacitive touch - direct I2C register reads)
+// Read touch input (supports both resistive and capacitive touch)
 bool readTouch(uint16_t &x, uint16_t &y) {
   // Debounce
   unsigned long now = millis();
@@ -184,6 +217,25 @@ bool readTouch(uint16_t &x, uint16_t &y) {
     return false;
   }
 
+#if defined(BOARD_CYD_RESISTIVE)
+  // XPT2046 Resistive Touch
+  if (ts.touched()) {
+    TS_Point p = ts.getPoint();
+
+    // Map raw values to screen coordinates
+    x = map(p.x, TOUCH_MIN_X, TOUCH_MAX_X, 0, 320);
+    y = map(p.y, TOUCH_MIN_Y, TOUCH_MAX_Y, 0, 240);
+
+    // Clamp to screen bounds
+    x = constrain(x, 0, 319);
+    y = constrain(y, 0, 239);
+
+    lastTouchTime = now;
+    return true;
+  }
+  return false;
+
+#elif defined(BOARD_CYD_CAPACITIVE)
   // CST816S Capacitive Touch - Direct I2C register reads
   Wire.beginTransmission(CST816S_ADDR);
   Wire.write(0x02);  // Start at finger count register
@@ -216,6 +268,7 @@ bool readTouch(uint16_t &x, uint16_t &y) {
     }
   }
   return false;
+#endif
 }
 
 // Draw main menu
@@ -832,16 +885,69 @@ void setup() {
   delay(1000);
 
   Serial.println("\n========== MASTER CONTROLLER ==========");
-  Serial.println("Twenty-Four Times - ESP-NOW Master (CYD)");
+  Serial.println("Twenty-Four Times - ESP-NOW Master");
+  Serial.println(BOARD_NAME);
   Serial.println("=======================================\n");
 
   // Initialize backlight
   pinMode(TFT_BACKLIGHT, OUTPUT);
   digitalWrite(TFT_BACKLIGHT, HIGH);
+  Serial.println("Backlight ON");
 
-  // Initialize I2C for touch (CST816S)
+  // ===== TOUCH CONTROLLER INITIALIZATION =====
+#if defined(BOARD_CYD_RESISTIVE)
+  // XPT2046 Resistive Touch - uses SEPARATE SPI bus from display
+  Serial.printf("Touch pins: CS=%d, IRQ=%d, SCLK=%d, MOSI=%d, MISO=%d\n",
+                TOUCH_CS, TOUCH_IRQ, TOUCH_SCLK, TOUCH_MOSI, TOUCH_MISO);
+
+  // Initialize the separate SPI bus for touch (HSPI)
+  touchSPI.begin(TOUCH_SCLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
+  ts.begin(touchSPI);
+  ts.setRotation(1);  // Match display rotation
+  Serial.println("XPT2046 touch controller initialized on HSPI");
+
+#elif defined(BOARD_CYD_CAPACITIVE)
+  // CST816S Capacitive Touch (I2C)
+  Serial.printf("Touch pins: SDA=%d, SCL=%d, RST=%d, INT=%d\n",
+                TOUCH_SDA, TOUCH_SCL, TOUCH_RST, TOUCH_INT);
+
+  // Configure RST pin and perform reset
+  pinMode(TOUCH_RST, OUTPUT);
+  digitalWrite(TOUCH_RST, LOW);
+  delay(20);
+  digitalWrite(TOUCH_RST, HIGH);
+  delay(100);  // Wait for CST816S to boot
+  Serial.println("Touch controller reset complete");
+
+  // Configure INT pin
+  pinMode(TOUCH_INT, INPUT);
+
+  // Initialize I2C for touch on correct pins (SDA=33, SCL=32)
   Wire.begin(TOUCH_SDA, TOUCH_SCL);
-  Serial.println("I2C initialized for touch controller");
+  delay(50);
+
+  // Verify touch controller is present and read info
+  Wire.beginTransmission(CST816S_ADDR);
+  if (Wire.endTransmission() == 0) {
+    Serial.println("CST816S found at 0x15");
+
+    // Read chip info
+    Wire.beginTransmission(CST816S_ADDR);
+    Wire.write(0xA7);  // Chip ID register
+    Wire.endTransmission(false);
+    Wire.requestFrom(CST816S_ADDR, 3);
+    if (Wire.available() >= 3) {
+      byte chipId = Wire.read();
+      byte projId = Wire.read();
+      byte fwVer = Wire.read();
+      Serial.printf("  Chip ID: 0x%02X, Project: %d, FW: %d\n", chipId, projId, fwVer);
+    }
+  } else {
+    Serial.println("WARNING: CST816S not found!");
+  }
+#endif
+
+  Serial.println("Touch controller ready");
 
   // Initialize TFT
   tft.init();
