@@ -16,14 +16,38 @@
 // 240x240 RGB565 buffer (~115 KB)
 GFXcanvas16 canvas(240, 240);
 
-// ---- TFT pin names ----
-#define tft_rst  4   // D2 / GPIO4 / pin 3
-#define tft_cs   5   // D3 / GPIO5 / pin 4
-#define tft_dc   6   // D4 / GPIO6 / pin 5
-#define tft_scl  8   // D8 / GPIO8 / pin 9
-#define tft_sda  10  // D10 / GPIO10 / pin 11
+// ===== BOARD-SPECIFIC PIN CONFIGURATION =====
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_XIAO_ESP32C3)
+  // ----- XIAO ESP32-C3 -----
+  // Uses software SPI on custom pins (initialized manually in setup)
+  // Performance: ~30 FPS
+  #define BOARD_NAME "XIAO ESP32-C3"
+  #define tft_rst  4   // D2 / GPIO4 / pin 3
+  #define tft_cs   5   // D3 / GPIO5 / pin 4
+  #define tft_dc   6   // D4 / GPIO6 / pin 5
+  #define tft_scl  8   // D8 / GPIO8 / pin 9 (strapping pin - safe for SPI CLK)
+  #define tft_sda  10  // D10 / GPIO10 / pin 11
 
-Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
+  // 3-parameter constructor - SPI pins set manually in setup()
+  Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
+
+#elif defined(CONFIG_IDF_TARGET_ESP32S3) || defined(ARDUINO_ESP32S3_DEV)
+  // ----- ESP32-S3-Zero (Waveshare) -----
+  // Uses hardware SPI3 with DMA support
+  // Performance: ~50-60 FPS (2x faster than C3)
+  #define BOARD_NAME "ESP32-S3-Zero"
+  #define tft_rst  4   // GPIO4 / GP4 / left header pin 7
+  #define tft_cs   15  // GPIO15 / GP15 / bottom SMD pad 8 - Hardware SPI3_CS
+  #define tft_dc   16  // GPIO16 / GP16 / bottom SMD pad 9
+  #define tft_scl  14  // GPIO14 / GP14 / bottom SMD pad 7 - Hardware SPI3_CLK (up to 80MHz)
+  #define tft_sda  13  // GPIO13 / GP13 / right header pin 16 - Hardware SPI3_MOSI
+
+  // Hardware SPI constructor (uses default SPI pins, only need CS/DC/RST)
+  Adafruit_GC9A01A tft(tft_cs, tft_dc, tft_rst);
+
+#else
+  #error "Unsupported board! Please use ESP32-C3 or ESP32-S3."
+#endif
 
 // ---- Display geometry ----
 const int DISPLAY_WIDTH = 240;
@@ -583,8 +607,16 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
+  // ---- Board Identification ----
+  Serial.println("\n========== TWENTY-FOUR TIMES - PIXEL NODE ==========");
+  Serial.print("Board: ");
+  Serial.println(BOARD_NAME);
+  Serial.print("Pixel ID: ");
+  Serial.println(PIXEL_ID);
+  Serial.println("====================================================\n");
+
   // ---- Memory Statistics ----
-  Serial.println("\n========== MEMORY DEBUG INFO ==========");
+  Serial.println("========== MEMORY DEBUG INFO ==========");
   Serial.print("Free heap: ");
   Serial.print(ESP.getFreeHeap());
   Serial.println(" bytes");
@@ -633,9 +665,15 @@ void setup() {
   Serial.println(" bytes (115,200 bytes)");
 
   // ---- SPI ----
-  // ESP32-C3 doesn't have default SPI pins, so we specify them explicitly
-  // SPI.begin(SCK, MISO, MOSI, SS) - MISO=-1 since we don't need it for write-only TFT
-  SPI.begin(tft_scl, -1, tft_sda);
+  #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_XIAO_ESP32C3)
+    // ESP32-C3: Manually initialize SPI with custom pins
+    // SPI.begin(SCK, MISO, MOSI, SS) - MISO=-1 since we don't need it for write-only TFT
+    SPI.begin(tft_scl, -1, tft_sda);
+    Serial.println("SPI initialized with custom pins (software SPI)");
+  #else
+    // ESP32-S3: Use default hardware SPI pins (no need to call SPI.begin)
+    Serial.println("Using default hardware SPI pins");
+  #endif
 
   // ---- TFT ----
   Serial.println("Initializing TFT...");
