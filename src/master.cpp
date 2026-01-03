@@ -67,7 +67,7 @@ TFT_eSPI tft = TFT_eSPI();
 enum ControlMode {
   MODE_MENU,        // Main menu - select mode
   MODE_SIMULATION,  // Random patterns like the simulation
-  MODE_PATTERNS,    // Cycle through test patterns
+  MODE_DIGITS,      // Display digits 0-9 with animations
   MODE_IDENTIFY,    // Identify all pixels
   MODE_MANUAL       // Manual control (future)
 };
@@ -79,7 +79,6 @@ unsigned long lastCommandTime = 0;
 unsigned long lastPingTime = 0;
 unsigned long modeStartTime = 0;
 const unsigned long SIMULATION_INTERVAL = 5000;  // 5 seconds between random patterns
-const unsigned long PATTERN_INTERVAL = 5000;     // 5 seconds between test patterns
 const unsigned long IDENTIFY_DURATION = 5000;    // Identify phase duration
 const unsigned long PING_INTERVAL = 5000;        // 5 seconds between pings in manual mode
 
@@ -94,118 +93,89 @@ struct ManualState {
   float duration = 2.0;          // Duration in seconds
 } manualState;
 
-// Test pattern state
-int patternIndex = 0;
-
 // Touch state
 uint16_t touchX = 0, touchY = 0;
 bool touched = false;
 unsigned long lastTouchTime = 0;
 const unsigned long TOUCH_DEBOUNCE = 200;  // 200ms debounce
 
-// ===== TEST PATTERNS =====
+// ===== DIGIT DEFINITIONS =====
 
-struct TestPattern {
-  const char* name;
-  float angles[24][3];  // 24 pixels, 3 hands each
-  TransitionType transition;
-  float duration_sec;   // Duration in seconds
-  uint8_t colorIndex;   // Color palette index
-  uint8_t opacity;      // Opacity (0-255)
+// Digit mapping for 6 pixels arranged as:
+// Pixel IDs: 0, 1 (top row)
+//            8, 9 (middle row) 
+//           16,17 (bottom row)
+// Each digit has angles for each pixel's 3 hands
+// Angles: 0=up, 90=right, 180=down, 225=empty, 270=left
+// Style: normal opacity=255, blank pixels opacity=50 with 225° angles
+
+struct DigitPattern {
+  float angles[6][3];  // 6 pixels, 3 hands each
+  uint8_t opacity[6];  // Opacity for each pixel (255=normal, 50=blank)
 };
 
-// Pattern 1: All hands pointing up (0°) - White on Black
-TestPattern pattern_all_up = {
-  "All Up",
-  {
-    {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0},
-    {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0},
-    {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0},
-    {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}
-  },
-  TRANSITION_ELASTIC,
-  3.0,  // 3 seconds
-  0,    // White on Black
-  255   // Full opacity
+DigitPattern digitPatterns[12] = {
+  // Digit '0'
+  {{{90, 180, 180}, {180, 270, 270}, {0, 180, 180}, {0, 180, 180}, {0, 90, 90}, {0, 270, 270}},
+   {255, 255, 255, 255, 255, 255}},
+  
+  // Digit '1' 
+  {{{180, 180, 180}, {225, 225, 225}, {0, 180, 180}, {225, 225, 225}, {0, 0, 0}, {225, 225, 225}},
+   {255, 50, 255, 50, 255, 50}},
+  
+  // Digit '2'
+  {{{90, 90, 90}, {270, 180, 270}, {90, 180, 180}, {0, 270, 0}, {0, 90, 90}, {270, 270, 270}},
+   {255, 255, 255, 255, 255, 255}},
+  
+  // Digit '3'
+  {{{90, 90, 90}, {270, 180, 270}, {90, 90, 90}, {0, 180, 270}, {90, 90, 90}, {0, 270, 0}},
+   {255, 255, 255, 255, 255, 255}},
+  
+  // Digit '4'
+  {{{180, 180, 180}, {180, 180, 180}, {0, 90, 90}, {0, 180, 270}, {225, 225, 225}, {0, 0, 0}},
+   {255, 255, 255, 255, 50, 255}},
+  
+  // Digit '5'
+  {{{90, 180, 180}, {270, 270, 270}, {0, 90, 90}, {270, 180, 270}, {0, 90, 90}, {0, 270, 0}},
+   {255, 255, 255, 255, 255, 255}},
+  
+  // Digit '6'
+  {{{180, 90, 90}, {270, 180, 270}, {0, 90, 180}, {270, 180, 270}, {0, 90, 90}, {0, 270, 0}},
+   {255, 255, 255, 255, 255, 255}},
+  
+  // Digit '7'
+  {{{90, 180, 180}, {180, 270, 270}, {225, 225, 225}, {0, 180, 180}, {225, 225, 225}, {0, 0, 0}},
+   {255, 255, 50, 255, 50, 255}},
+  
+  // Digit '8'
+  {{{90, 180, 180}, {180, 270, 270}, {0, 90, 180}, {0, 180, 270}, {0, 90, 90}, {0, 270, 0}},
+   {255, 255, 255, 255, 255, 255}},
+  
+  // Digit '9'
+  {{{90, 180, 180}, {180, 270, 270}, {0, 90, 90}, {0, 180, 270}, {0, 90, 90}, {0, 270, 0}},
+   {255, 255, 255, 255, 255, 255}},
+  
+  // ':' (colon)
+  {{{180, 180, 180}, {225, 225, 225}, {225, 225, 225}, {225, 225, 225}, {0, 0, 0}, {225, 225, 225}},
+   {255, 50, 50, 50, 255, 50}},
+  
+  // ' ' (space)
+  {{{225, 225, 225}, {225, 225, 225}, {225, 225, 225}, {225, 225, 225}, {225, 225, 225}, {225, 225, 225}},
+   {50, 50, 50, 50, 50, 50}}
 };
 
-// Pattern 2: All hands pointing right (90°) - Black on White
-TestPattern pattern_all_right = {
-  "All Right",
-  {
-    {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90},
-    {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90},
-    {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90},
-    {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}, {90, 90, 90}
-  },
-  TRANSITION_EASE_IN_OUT,
-  2.0,  // 2 seconds
-  1,    // Black on White
-  255   // Full opacity
-};
-
-// Pattern 3: All hands pointing down (180°) - Dark Brown on Cream
-TestPattern pattern_all_down = {
-  "All Down",
-  {
-    {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180},
-    {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180},
-    {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180},
-    {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}, {180, 180, 180}
-  },
-  TRANSITION_LINEAR,
-  2.5,  // 2.5 seconds
-  2,    // Dark Brown on Cream
-  255   // Full opacity
-};
-
-// Pattern 4: All hands pointing left (270°) - White on Deep Sky Blue
-TestPattern pattern_all_left = {
-  "All Left",
-  {
-    {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270},
-    {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270},
-    {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270},
-    {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}, {270, 270, 270}
-  },
-  TRANSITION_BOUNCE,
-  3.5,  // 3.5 seconds
-  10,   // White on Deep Sky Blue
-  255   // Full opacity
-};
-
-// Pattern 5: Staggered - each pixel different - Ivory on Deep Pink
-TestPattern pattern_staggered = {
-  "Staggered",
-  {
-    {0, 90, 180}, {90, 180, 270}, {180, 270, 0}, {270, 0, 90},
-    {0, 90, 180}, {90, 180, 270}, {180, 270, 0}, {270, 0, 90},
-    {0, 90, 180}, {90, 180, 270}, {180, 270, 0}, {270, 0, 90},
-    {0, 90, 180}, {90, 180, 270}, {180, 270, 0}, {270, 0, 90},
-    {0, 90, 180}, {90, 180, 270}, {180, 270, 0}, {270, 0, 90},
-    {0, 90, 180}, {90, 180, 270}, {180, 270, 0}, {270, 0, 90}
-  },
-  TRANSITION_ELASTIC,
-  4.0,  // 4 seconds
-  11,   // Ivory on Deep Pink
-  255   // Full opacity
-};
-
-// Array of all patterns
-TestPattern* patterns[] = {
-  &pattern_all_up,
-  &pattern_all_right,
-  &pattern_all_down,
-  &pattern_all_left,
-  &pattern_staggered
-};
-const int numPatterns = 5;
+// Pixel ID mapping for the 6-pixel digit display
+// Physical wiring: IDs 0,1 (top), 8,9 (middle), 16,17 (bottom)
+const uint8_t digitPixelIds[6] = {0, 1, 8, 9, 16, 17};
 
 // ===== FUNCTION DECLARATIONS =====
 void drawManualScreen();
 void handleManualTouch(uint16_t x, uint16_t y);
 void sendManualCommand(bool allPixels);
 void sendPing();
+void drawDigitsScreen();
+void handleDigitsTouch(uint16_t x, uint16_t y);
+void sendDigitPattern(uint8_t digit);
 
 // ===== FUNCTIONS =====
 
@@ -300,15 +270,15 @@ void drawMenu() {
   tft.setCursor(30, 125);
   tft.println("Random patterns");
 
-  // Button 2: Test Patterns (top right)
+  // Button 2: Digits (top right)
   tft.fillRoundRect(170, 90, 140, 60, 8, TFT_DARKBLUE);
   tft.setTextColor(TFT_WHITE, TFT_DARKBLUE);
   tft.setTextSize(2);
-  tft.setCursor(185, 105);
-  tft.println("Patterns");
+  tft.setCursor(195, 105);
+  tft.println("Digits");
   tft.setTextSize(1);
-  tft.setCursor(185, 125);
-  tft.println("Cycle tests");
+  tft.setCursor(180, 125);
+  tft.println("Display 0-9");
 
   // Button 3: Identify (bottom left)
   tft.fillRoundRect(10, 160, 150, 60, 8, TFT_PURPLE);
@@ -337,9 +307,9 @@ ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
   if (x >= 10 && x <= 160 && y >= 90 && y <= 150) {
     return MODE_SIMULATION;
   }
-  // Button 2: Patterns (170, 90, 140, 60)
+  // Button 2: Digits (170, 90, 140, 60)
   if (x >= 170 && x <= 310 && y >= 90 && y <= 150) {
-    return MODE_PATTERNS;
+    return MODE_DIGITS;
   }
   // Button 3: Identify (10, 160, 150, 60)
   if (x >= 10 && x <= 160 && y >= 160 && y <= 220) {
@@ -419,74 +389,6 @@ void sendRandomPattern() {
   }
 }
 
-void updateDisplay(TestPattern* pattern) {
-  tft.fillScreen(COLOR_BG);
-
-  // Title
-  tft.setTextColor(COLOR_ACCENT, COLOR_BG);
-  tft.setTextSize(2);
-  tft.setCursor(10, 10);
-  tft.println("Twenty-Four Times");
-  tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setTextSize(1);
-  tft.setCursor(10, 35);
-  tft.println("ESP-NOW Master Controller");
-
-  // Pattern info
-  tft.setTextSize(2);
-  tft.setTextColor(COLOR_PATTERN, COLOR_BG);
-  tft.setCursor(10, 70);
-  tft.print("Pattern: ");
-  tft.println(pattern->name);
-
-  tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setTextSize(1);
-  tft.setCursor(10, 95);
-  tft.print("Duration: ");
-  tft.print(pattern->duration_sec, 1);
-  tft.println(" sec");
-
-  tft.setCursor(10, 110);
-  tft.print("Transition: ");
-  tft.println(getTransitionName(pattern->transition));
-
-  tft.setCursor(10, 125);
-  tft.print("Color: ");
-  if (pattern->colorIndex < COLOR_PALETTE_SIZE) {
-    tft.println(COLOR_PALETTE[pattern->colorIndex].name);
-  } else {
-    tft.println("Invalid");
-  }
-
-  tft.setCursor(10, 140);
-  tft.print("Opacity: ");
-  tft.println(pattern->opacity);
-
-  // Status
-  tft.setCursor(10, 165);
-  tft.setTextColor(COLOR_ACCENT, COLOR_BG);
-  tft.println("Broadcasting to 24 pixels...");
-
-  // Next pattern countdown
-  tft.setCursor(10, 190);
-  tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.print("Next in ");
-  tft.print(PATTERN_INTERVAL / 1000);
-  tft.println(" sec");
-
-  // Back to menu hint
-  tft.setCursor(10, 210);
-  tft.setTextColor(TFT_YELLOW, COLOR_BG);
-  tft.println("Touch screen to return to menu");
-
-  // MAC address
-  tft.setCursor(10, 230);
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_DARKGREY, COLOR_BG);
-  tft.print("MAC: ");
-  tft.println(ESPNowComm::getMacAddress());
-}
-
 void sendIdentifyCommand(uint8_t pixelId) {
   ESPNowPacket packet;
   packet.identify.command = CMD_IDENTIFY;
@@ -521,51 +423,175 @@ void sendIdentifyCommand(uint8_t pixelId) {
   }
 }
 
-void sendPattern(TestPattern* pattern) {
+// ===== DIGITS MODE FUNCTIONS =====
+
+void drawDigitsScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title
+  tft.setTextColor(COLOR_ACCENT, COLOR_BG);
+  tft.setTextSize(2);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("Digits Mode", 160, 5);
+  tft.setTextDatum(TL_DATUM);
+
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(70, 25);
+  tft.println("Touch a digit to display:");
+
+  // Draw number buttons in a 2x5 grid
+  // Top row: 0-4
+  for (int i = 0; i <= 4; i++) {
+    int x = 10 + i * 60;
+    int y = 45;
+    
+    tft.fillRoundRect(x, y, 50, 40, 4, TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+    tft.setTextSize(3);
+    tft.setCursor(x + 20, y + 10);
+    tft.print(i);
+  }
+
+  // Bottom row: 5-9
+  for (int i = 5; i <= 9; i++) {
+    int x = 10 + (i - 5) * 60;
+    int y = 95;
+    
+    tft.fillRoundRect(x, y, 50, 40, 4, TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+    tft.setTextSize(3);
+    tft.setCursor(x + 20, y + 10);
+    tft.print(i);
+  }
+
+  // Special characters row
+  // Colon button
+  tft.fillRoundRect(10, 145, 50, 40, 4, TFT_PURPLE);
+  tft.setTextColor(TFT_WHITE, TFT_PURPLE);
+  tft.setTextSize(3);
+  tft.setCursor(25, 155);
+  tft.print(":");
+
+  // Space button
+  tft.fillRoundRect(70, 145, 50, 40, 4, TFT_PURPLE);
+  tft.setTextColor(TFT_WHITE, TFT_PURPLE);
+  tft.setTextSize(2);
+  tft.setCursor(80, 155);
+  tft.print("SPC");
+
+  // Back button
+  tft.fillRoundRect(200, 145, 100, 40, 4, TFT_RED);
+  tft.setTextColor(TFT_WHITE, TFT_RED);
+  tft.setTextSize(2);
+  tft.setCursor(225, 155);
+  tft.print("Back");
+}
+
+void handleDigitsTouch(uint16_t x, uint16_t y) {
+  // Check digit buttons (0-4, top row)
+  if (y >= 45 && y <= 85) {
+    for (int i = 0; i <= 4; i++) {
+      int buttonX = 10 + i * 60;
+      if (x >= buttonX && x <= buttonX + 50) {
+        sendDigitPattern(i);
+        return;
+      }
+    }
+  }
+  
+  // Check digit buttons (5-9, bottom row)
+  if (y >= 95 && y <= 135) {
+    for (int i = 5; i <= 9; i++) {
+      int buttonX = 10 + (i - 5) * 60;
+      if (x >= buttonX && x <= buttonX + 50) {
+        sendDigitPattern(i);
+        return;
+      }
+    }
+  }
+  
+  // Check special character buttons
+  if (y >= 145 && y <= 185) {
+    // Colon button
+    if (x >= 10 && x <= 60) {
+      sendDigitPattern(10); // ':' is index 10
+      return;
+    }
+    // Space button
+    if (x >= 70 && x <= 120) {
+      sendDigitPattern(11); // ' ' is index 11
+      return;
+    }
+    // Back button
+    if (x >= 200 && x <= 300) {
+      currentMode = MODE_MENU;
+      drawMenu();
+      return;
+    }
+  }
+}
+
+void sendDigitPattern(uint8_t digit) {
+  if (digit > 11) return; // Invalid digit
+  
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
-  packet.angleCmd.transition = pattern->transition;
-  packet.angleCmd.duration = floatToDuration(pattern->duration_sec);
-
-  // Set angles and directions for all pixels
+  
+  // Use random transition and duration for animation
+  packet.angleCmd.transition = getRandomTransition();
+  packet.angleCmd.duration = floatToDuration(getRandomDuration());
+  
+  // Random color for the digit
+  uint8_t colorIndex = getRandomColorIndex();
+  
+  // Clear all pixels first (set to 225° with low opacity)
   for (int i = 0; i < MAX_PIXELS; i++) {
-    // Set angles with shortest path direction (default)
-    packet.angleCmd.setPixelAngles(i,
-      pattern->angles[i][0],
-      pattern->angles[i][1],
-      pattern->angles[i][2],
-      DIR_SHORTEST,  // Let pixel choose shortest path
+    packet.angleCmd.setPixelAngles(i, 225, 225, 225, DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
+    packet.angleCmd.setPixelStyle(i, colorIndex, 50);
+  }
+  
+  // Set the 6 pixels that make up the digit
+  DigitPattern& pattern = digitPatterns[digit];
+  for (int i = 0; i < 6; i++) {
+    uint8_t pixelId = digitPixelIds[i];
+    packet.angleCmd.setPixelAngles(pixelId,
+      pattern.angles[i][0],
+      pattern.angles[i][1],  
+      pattern.angles[i][2],
+      DIR_SHORTEST,
       DIR_SHORTEST,
       DIR_SHORTEST
     );
-
-    // Set color and opacity for each pixel
-    packet.angleCmd.setPixelStyle(i, pattern->colorIndex, pattern->opacity);
+    packet.angleCmd.setPixelStyle(pixelId, colorIndex, pattern.opacity[i]);
   }
-
+  
   // Send the packet
   if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {
-    Serial.print("Sent pattern: ");
-    Serial.print(pattern->name);
-    Serial.print(" (duration: ");
-    Serial.print(pattern->duration_sec, 1);
-    Serial.print("s, color: ");
-    Serial.print(pattern->colorIndex);
-    Serial.print(", opacity: ");
-    Serial.print(pattern->opacity);
-    Serial.println(")");
-
-    // Update display
-    updateDisplay(pattern);
-  } else {
-    Serial.println("Failed to send packet!");
-
-    // Show error on display
-    tft.fillScreen(TFT_RED);
-    tft.setTextColor(TFT_WHITE, TFT_RED);
+    const char* digitNames[] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", " "};
+    Serial.print("Sent digit: ");
+    Serial.print(digitNames[digit]);
+    Serial.print(" with transition: ");
+    Serial.print(getTransitionName(packet.angleCmd.transition));
+    Serial.print(", duration: ");
+    Serial.print(durationToFloat(packet.angleCmd.duration), 1);
+    Serial.println("s");
+    
+    // Update display to show what was sent
+    tft.fillRect(130, 145, 60, 40, COLOR_BG);
+    tft.setTextColor(COLOR_ACCENT, COLOR_BG);
     tft.setTextSize(3);
-    tft.setCursor(60, 100);
-    tft.println("SEND FAILED!");
+    tft.setCursor(145, 155);
+    tft.print(digitNames[digit]);
+    
+  } else {
+    Serial.println("Failed to send digit packet!");
+    
+    tft.fillRect(130, 145, 60, 40, TFT_RED);
+    tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.setTextSize(1);
+    tft.setCursor(140, 160);
+    tft.print("ERROR");
   }
 }
 
@@ -1012,7 +1038,6 @@ void loop() {
         currentMode = newMode;
         modeStartTime = currentTime;
         lastCommandTime = currentTime;
-        patternIndex = 0;
 
         Serial.print("Mode changed to: ");
         Serial.println(newMode);
@@ -1022,8 +1047,8 @@ void loop() {
           case MODE_SIMULATION:
             sendRandomPattern();
             break;
-          case MODE_PATTERNS:
-            sendPattern(patterns[0]);
+          case MODE_DIGITS:
+            drawDigitsScreen();
             break;
           case MODE_IDENTIFY:
             sendIdentifyCommand(255);
@@ -1039,6 +1064,9 @@ void loop() {
     } else if (currentMode == MODE_MANUAL) {
       // Manual mode has its own touch handler
       handleManualTouch(tx, ty);
+    } else if (currentMode == MODE_DIGITS) {
+      // Digits mode has its own touch handler
+      handleDigitsTouch(tx, ty);
     } else {
       // Any touch in other modes returns to menu
       currentMode = MODE_MENU;
@@ -1062,13 +1090,8 @@ void loop() {
       break;
     }
 
-    case MODE_PATTERNS: {
-      // Cycle through test patterns every PATTERN_INTERVAL
-      if (currentTime - lastCommandTime >= PATTERN_INTERVAL) {
-        sendPattern(patterns[patternIndex]);
-        patternIndex = (patternIndex + 1) % numPatterns;
-        lastCommandTime = currentTime;
-      }
+    case MODE_DIGITS: {
+      // Digits mode waits for touch input - no automatic behavior
       break;
     }
 
