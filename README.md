@@ -283,7 +283,7 @@ This project is not intended as a replica, but as a **technical and conceptual e
 
 * **Humans Since 1982 — ClockClock**
   The original art installation using physical stepper motors and clock hands
-  [https://www.humanssince1982.com/clockclock](https://www.humanssince1982.com/clockclock)
+  [https://www.humanssince1982.com/clockclock](https://www.humanssince1982.com/products/clockclock-24-white)
 
 * **Erich Styger — MetaClockClock**
   An impressive DIY implementation using 120 stepper motors with LED rings, controlled by NXP LPC845 microcontrollers over RS-485. Multiple versions documented with detailed build logs, CNC enclosures, and open source firmware.
