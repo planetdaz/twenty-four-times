@@ -232,16 +232,6 @@ See `src/main.cpp` for implementation details.
 
 ---
 
-## Assembly Notes
-
-1. **Castellated Edges:** Both MCU boards have half-circle plated holes along edges, allowing direct SMD soldering to a carrier PCB for compact, permanent installation
-2. **Strapping Pins:** GPIO8 on C3 is a boot mode pin - ensure it's not pulled LOW during power-on/reset
-3. **Decoupling:** Add 10µF + 100nF capacitors near each MCU's power pins
-4. **Wire Gauge:** Use 22-24 AWG for power distribution, 26-28 AWG for SPI signals
-5. **Cable Length:** Keep SPI wires <15cm for reliable 40MHz+ operation
-
----
-
 ## Performance Comparison
 
 | Metric | ESP32-C3 | ESP32-S3 |
