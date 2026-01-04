@@ -1,7 +1,7 @@
 # ESP32 Pixel Display Discovery & Provisioning Protocol
 
 ## Overview
-This document outlines the approach for discovering, identifying, and provisioning a network of ESP32-based pixel display slaves using a master controller and ESP-NOW wireless communication. The goal is to reliably discover all devices, assign unique IDs, and visually map each device to its physical location.
+This document outlines the approach for discovering, identifying, and provisioning a network of ESP32-based pixel display slaves using a master controller and **ESP-NOW wireless communication**. The goal is to reliably discover all devices, assign unique IDs, and visually map each device to its physical location.
 
 ---
 

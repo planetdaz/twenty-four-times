@@ -38,13 +38,13 @@ A single master controller coordinates all pixels via a **simple broadcast proto
 | --------------------- | ------------------------------------------------------------------------ |
 | **Master Controller** | Generates global animation targets and transition instructions           |
 | **Pixel Nodes (×24)** | Render motion locally based on received targets and their assigned index |
-| **Communication**     | One-way wired serial broadcast (3-wire bus)                              |
+| **Communication**     | One-way wireless broadcast (ESP-NOW protocol)                            |
 
 ### Why this architecture
 
 * Guaranteed smooth animation per display
 * No shared SPI bandwidth
-* Simple wiring
+* Simple wireless setup
 * Identical firmware on all nodes
 
 ---
@@ -101,32 +101,11 @@ Each pixel module exposes **three conductors**:
 | --------- | ------------------- |
 | **VCC**   | 5 V power           |
 | **GND**   | Ground              |
-| **COMMS** | One-way serial data |
+| **COMMS** | (Unused for ESP-NOW) |
 
-* 24 identical 3-pin connections
+* 24 identical 3-pin connections (power only)
 * Dupont-compatible
 * Bus topology inside main enclosure
-
----
-
-## 4. Pixel Identity & Configuration
-
-Pixel identity is **not hard-coded** and **not strap-based**.
-
-* Each node stores its assigned index in **non-volatile flash (NVS)**
-* IDs persist across firmware updates
-* All nodes run **identical firmware**
-
-### Provisioning concept
-
-* A configuration or provisioning mode assigns IDs
-* Assignment may be initiated by:
-
-  * the master controller
-  * a temporary configuration MCU
-  * or a dedicated setup command
-
-Exact provisioning mechanics are intentionally deferred until hardware assembly is complete.
 
 ---
 
@@ -138,6 +117,7 @@ Exact provisioning mechanics are intentionally deferred until hardware assembly 
 * Deterministic
 * No clocks, timestamps, or frame counters
 * Scales to non-clock animations
+* **Wireless, using ESP-NOW protocol**
 
 ### Core Concept
 
