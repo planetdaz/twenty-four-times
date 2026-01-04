@@ -14,6 +14,7 @@ The name *Twenty-Four Times* intentionally reflects both:
 
 ### Video Demonstrations
 
+* [2x3 MVP assembly with full master/pixel communication and digit animation](https://www.youtube.com/watch?v=rqYOUXmbnBk)
 * [On-screen simulation and initial build with custom 3D printed enclosures](https://www.youtube.com/watch?v=c2BB3x_dGME)
 * [Testing master controller with ESP-NOW communication](https://www.youtube.com/watch?v=1ejrj0Ynra4)
 
