@@ -174,6 +174,12 @@ uint8_t currentDigitColor = 0;
 // Current speed for digits mode (duration in seconds)
 float currentDigitSpeed = 2.0;
 
+// Auto-cycle mode variables
+bool autoCycleEnabled = false;
+uint8_t autoCycleDigit = 0;
+bool autoCycleDirection = true; // true = 0->9, false = 9->0
+unsigned long lastAutoCycleTime = 0;
+
 // ===== FUNCTION DECLARATIONS =====
 void drawManualScreen();
 void handleManualTouch(uint16_t x, uint16_t y);
@@ -486,12 +492,22 @@ void drawDigitsScreen() {
   tft.setCursor(80, 155);
   tft.print("SPC");
 
-  // Back button
-  tft.fillRoundRect(200, 145, 100, 40, 4, TFT_RED);
+  // Back button (smaller to make room for auto-cycle)
+  tft.fillRoundRect(250, 145, 60, 40, 4, TFT_RED);
   tft.setTextColor(TFT_WHITE, TFT_RED);
-  tft.setTextSize(2);
-  tft.setCursor(225, 155);
+  tft.setTextSize(1);
+  tft.setCursor(265, 160);
   tft.print("Back");
+  
+  // Auto-cycle toggle button
+  uint16_t cycleColor = autoCycleEnabled ? TFT_GREEN : TFT_DARKGREY;
+  tft.fillRoundRect(130, 145, 110, 40, 4, cycleColor);
+  tft.setTextColor(TFT_WHITE, cycleColor);
+  tft.setTextSize(1);
+  tft.setCursor(135, 155);
+  tft.print("Auto-Cycle");
+  tft.setCursor(140, 167);
+  tft.print(autoCycleEnabled ? "ON" : "OFF");
 
   // Color control row
   tft.setTextSize(1);
@@ -580,8 +596,20 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
       sendDigitPattern(11); // ' ' is index 11
       return;
     }
-    // Back button
-    if (x >= 200 && x <= 300) {
+    // Auto-cycle toggle button
+    if (x >= 130 && x <= 240) {
+      autoCycleEnabled = !autoCycleEnabled;
+      if (autoCycleEnabled) {
+        // Reset auto-cycle state when enabling
+        autoCycleDigit = 0;
+        autoCycleDirection = true;
+        lastAutoCycleTime = millis();
+      }
+      drawDigitsScreen();
+      return;
+    }
+    // Back button (updated coordinates)
+    if (x >= 250 && x <= 310) {
       currentMode = MODE_MENU;
       drawMenu();
       return;
@@ -1189,6 +1217,37 @@ void loop() {
       if (currentTime - lastPingTime >= 3000) {  // Ping every 3 seconds
         sendPing();
         lastPingTime = currentTime;
+      }
+      
+      // Handle auto-cycle mode
+      if (autoCycleEnabled) {
+        // Calculate total wait time: animation duration + 3 seconds
+        unsigned long totalWaitTime = (unsigned long)(currentDigitSpeed * 1000) + 3000;
+        
+        if (currentTime - lastAutoCycleTime >= totalWaitTime) {
+          // Send current digit
+          sendDigitPattern(autoCycleDigit);
+          
+          // Update digit for next cycle
+          if (autoCycleDirection) {
+            // Going 0->9
+            autoCycleDigit++;
+            if (autoCycleDigit > 9) {
+              autoCycleDigit = 8; // Go to 8 next
+              autoCycleDirection = false;
+            }
+          } else {
+            // Going 9->0
+            if (autoCycleDigit == 0) {
+              autoCycleDigit = 1; // Go to 1 next
+              autoCycleDirection = true;
+            } else {
+              autoCycleDigit--;
+            }
+          }
+          
+          lastAutoCycleTime = currentTime;
+        }
       }
       break;
     }
