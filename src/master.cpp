@@ -168,6 +168,9 @@ DigitPattern digitPatterns[12] = {
 // Physical wiring: IDs 0,1 (top), 8,9 (middle), 16,17 (bottom)
 const uint8_t digitPixelIds[6] = {0, 1, 8, 9, 16, 17};
 
+// Current color for digits mode
+uint8_t currentDigitColor = 0;
+
 // ===== FUNCTION DECLARATIONS =====
 void drawManualScreen();
 void handleManualTouch(uint16_t x, uint16_t y);
@@ -176,6 +179,7 @@ void sendPing();
 void drawDigitsScreen();
 void handleDigitsTouch(uint16_t x, uint16_t y);
 void sendDigitPattern(uint8_t digit);
+void sendDigitColorChange();
 
 // ===== FUNCTIONS =====
 
@@ -486,6 +490,33 @@ void drawDigitsScreen() {
   tft.setTextSize(2);
   tft.setCursor(225, 155);
   tft.print("Back");
+
+  // Color control row
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(10, 195);
+  tft.println("Color:");
+  
+  // Color prev button
+  tft.fillRoundRect(50, 195, 40, 25, 4, TFT_ORANGE);
+  tft.setTextColor(TFT_WHITE, TFT_ORANGE);
+  tft.setTextSize(2);
+  tft.setCursor(65, 200);
+  tft.print("<");
+  
+  // Color next button
+  tft.fillRoundRect(95, 195, 40, 25, 4, TFT_ORANGE);
+  tft.setTextColor(TFT_WHITE, TFT_ORANGE);
+  tft.setTextSize(2);
+  tft.setCursor(110, 200);
+  tft.print(">");
+  
+  // Show current color index
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setTextSize(1);
+  tft.setCursor(145, 202);
+  tft.print("#");
+  tft.print(currentDigitColor);
 }
 
 void handleDigitsTouch(uint16_t x, uint16_t y) {
@@ -530,6 +561,24 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
       return;
     }
   }
+  
+  // Check color control buttons
+  if (y >= 195 && y <= 220) {
+    // Color prev button
+    if (x >= 50 && x <= 90) {
+      currentDigitColor = (currentDigitColor == 0) ? (COLOR_PALETTE_SIZE - 1) : currentDigitColor - 1;
+      sendDigitColorChange();
+      drawDigitsScreen();
+      return;
+    }
+    // Color next button
+    if (x >= 95 && x <= 135) {
+      currentDigitColor = (currentDigitColor + 1) % COLOR_PALETTE_SIZE;
+      sendDigitColorChange();
+      drawDigitsScreen();
+      return;
+    }
+  }
 }
 
 void sendDigitPattern(uint8_t digit) {
@@ -542,28 +591,36 @@ void sendDigitPattern(uint8_t digit) {
   packet.angleCmd.transition = getRandomTransition();
   packet.angleCmd.duration = floatToDuration(getRandomDuration());
   
-  // Random color for the digit
-  uint8_t colorIndex = getRandomColorIndex();
-  
   // Clear all pixels first (set to 225° with low opacity)
   for (int i = 0; i < MAX_PIXELS; i++) {
-    packet.angleCmd.setPixelAngles(i, 225, 225, 225, DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
-    packet.angleCmd.setPixelStyle(i, colorIndex, 50);
+    // Random directions for each hand
+    RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    
+    packet.angleCmd.setPixelAngles(i, 225, 225, 225, dir1, dir2, dir3);
+    packet.angleCmd.setPixelStyle(i, currentDigitColor, 50);
   }
   
   // Set the 6 pixels that make up the digit
   DigitPattern& pattern = digitPatterns[digit];
   for (int i = 0; i < 6; i++) {
     uint8_t pixelId = digitPixelIds[i];
+    
+    // Random directions for each hand
+    RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    
     packet.angleCmd.setPixelAngles(pixelId,
       pattern.angles[i][0],
       pattern.angles[i][1],  
       pattern.angles[i][2],
-      DIR_SHORTEST,
-      DIR_SHORTEST,
-      DIR_SHORTEST
+      dir1,
+      dir2,
+      dir3
     );
-    packet.angleCmd.setPixelStyle(pixelId, colorIndex, pattern.opacity[i]);
+    packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, pattern.opacity[i]);
   }
   
   // Send the packet
@@ -592,6 +649,46 @@ void sendDigitPattern(uint8_t digit) {
     tft.setTextSize(1);
     tft.setCursor(140, 160);
     tft.print("ERROR");
+  }
+}
+
+void sendDigitColorChange() {
+  ESPNowPacket packet;
+  packet.angleCmd.command = CMD_SET_ANGLES;
+  
+  // Use instant transition to only change colors
+  packet.angleCmd.transition = TRANSITION_INSTANT;
+  packet.angleCmd.duration = floatToDuration(0.1); // Very short duration
+  
+  // Keep all pixels at current angles, just update colors on the 6 digit pixels
+  for (int i = 0; i < MAX_PIXELS; i++) {
+    // Don't change angles - use 0° which tells pixel to keep current position
+    packet.angleCmd.setPixelAngles(i, 0, 0, 0, DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
+    
+    // Check if this is one of the 6 digit pixels
+    bool isDigitPixel = false;
+    for (int j = 0; j < 6; j++) {
+      if (i == digitPixelIds[j]) {
+        isDigitPixel = true;
+        break;
+      }
+    }
+    
+    if (isDigitPixel) {
+      // Update color on digit pixels, keep current opacity
+      packet.angleCmd.setPixelStyle(i, currentDigitColor, 255);
+    } else {
+      // Keep other pixels unchanged with low opacity
+      packet.angleCmd.setPixelStyle(i, currentDigitColor, 50);
+    }
+  }
+  
+  // Send the packet
+  if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {
+    Serial.print("Changed digit color to: ");
+    Serial.println(currentDigitColor);
+  } else {
+    Serial.println("Failed to send color change packet!");
   }
 }
 
@@ -1049,6 +1146,7 @@ void loop() {
             break;
           case MODE_DIGITS:
             drawDigitsScreen();
+            lastPingTime = currentTime;  // Initialize ping timer
             break;
           case MODE_IDENTIFY:
             sendIdentifyCommand(255);
@@ -1091,7 +1189,11 @@ void loop() {
     }
 
     case MODE_DIGITS: {
-      // Digits mode waits for touch input - no automatic behavior
+      // Send periodic pings to keep pixels alive
+      if (currentTime - lastPingTime >= 3000) {  // Ping every 3 seconds
+        sendPing();
+        lastPingTime = currentTime;
+      }
       break;
     }
 
