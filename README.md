@@ -95,21 +95,24 @@ A single master controller coordinates all pixels via a **simple broadcast proto
 
 ### 3.3 Pixel Interconnect
 
-Each pixel module exposes **three conductors**:
+Each pixel module exposes **two conductors**:
 
-| Line      | Purpose             |
-| --------- | ------------------- |
-| **VCC**   | 5 V power           |
-| **GND**   | Ground              |
-| **COMMS** | (Unused for ESP-NOW) |
+| Line      | Purpose   |
+| --------- | --------- |
+| **VCC**   | 5 V power |
+| **GND**   | Ground    |
 
-* 24 identical 3-pin connections (power only)
+* 24 identical 2-pin connections (power only)
 * Dupont-compatible
 * Bus topology inside main enclosure
 
 ---
 
 ## 5. Communication Protocol
+
+### Device Provisioning & Discovery
+
+For details on how devices are discovered, identified, and assigned unique IDs in the network, see the [DISCOVERY_AND_PROVISIONING.md](DISCOVERY_AND_PROVISIONING.md) document. It outlines the full protocol and user workflow for reliable setup and mapping of ESP32 pixel modules.
 
 ### Design Goals
 
@@ -274,4 +277,6 @@ This project is not intended as a replica, but as a **technical and conceptual e
 ## 12. License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
 
