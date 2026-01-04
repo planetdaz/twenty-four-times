@@ -114,36 +114,33 @@ Each pixel module exposes **two conductors**:
 
 For details on how devices are discovered, identified, and assigned unique IDs in the network, see the [DISCOVERY_AND_PROVISIONING.md](DISCOVERY_AND_PROVISIONING.md) document. It outlines the full protocol and user workflow for reliable setup and mapping of ESP32 pixel modules.
 
-### Design Goals
+### Protocol Overview
 
-* Extremely compact
-* Deterministic
-* No clocks, timestamps, or frame counters
-* Scales to non-clock animations
-* **Wireless, using ESP-NOW protocol**
+Communication between the master and pixel nodes uses the **ESP-NOW wireless protocol**. The master broadcasts packets containing animation and rendering instructions to all nodes. Each node receives only the data relevant to its assigned index.
 
-### Core Concept
+#### Packet Structure (AngleCommandPacket)
 
-Each broadcast frame defines:
+Each broadcast packet contains:
 
-* **Target angles** for all hands
-* **A transition type** shared by all hands
-* **A timing profile** selected from a predefined table
+- `command`: Command type (e.g., CMD_SET_ANGLES)
+- `transition`: Animation/easing type (e.g., linear, elastic, bounce)
+- `duration`: Animation duration (0–60 seconds, 0.25s steps)
+- `angles[MAX_PIXELS][3]`: Target angles for all hands on all pixels
+- `directions[MAX_PIXELS][3]`: Rotation direction for each hand (CW/CCW/shortest)
+- `colorIndices[MAX_PIXELS]`: Color palette index for each pixel
+- `opacities[MAX_PIXELS]`: Opacity (0–255) for each pixel
+- `reserved[24]`: Reserved for future use
 
-#### Conceptual payload
+#### Example Workflow
 
-```
-[ transition_id, duration_id, angles[72] ]
-```
+1. Master prepares an AngleCommandPacket with target angles, directions, colors, and opacities for all 24 pixels.
+2. Master broadcasts the packet via ESP-NOW.
+3. Each pixel node receives the packet, extracts its own instructions (by index), and animates accordingly.
 
-Where:
-
-* 24 pixels × 3 hands = **72 angles**
-* Angles are absolute targets
-* Each pixel updates only its own three values
-* Transition logic is fully local
-
-This keeps bandwidth low while allowing complex, expressive motion.
+#### Other Packet Types
+- **Ping**: Used to keep pixel nodes awake and responsive.
+- **Identify**: Used for provisioning and mapping, allowing a pixel to visually indicate itself.
+- **Assignment**: Used during provisioning to assign a unique ID to each pixel node based on its MAC address.
 
 ---
 
