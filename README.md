@@ -27,10 +27,11 @@ The name *Twenty-Four Times* intentionally reflects both:
 
 Each pixel is a **fully self-contained module**:
 
-* display
+* 240x240 circular display
 * microcontroller
 * local rendering
 * identical firmware
+* unique index (0-23) stored in NVS
 
 A single master controller coordinates all pixels via a **simple broadcast protocol**.
 
@@ -59,12 +60,12 @@ A single master controller coordinates all pixels via a **simple broadcast proto
 
 ### Microcontroller (Per Pixel)
 
-* **ESP32-S3** (recommended) or **ESP32-C3** (tested)
+* **ESP32-S3** or **ESP32-C3** 
 * Dual-core 240 MHz (S3) or single-core 160 MHz (C3)
-* Compact form factor with castellated edges
-* Hardware SPI support (S3) for optimal performance
+* Compact form factor
+* S3 is selected for higher performance and future expandability
 
-> **Note:** Both C3 and S3 are supported. S3 is recommended for production due to dual cores, PSRAM, and hardware SPI (50-60 FPS vs 30 FPS on C3).
+> **Note:** Both C3 and S3 are supported. S3 is preferred due to dual cores, PSRAM, and hardware SPI (50-60 FPS vs 30 FPS on C3).
 
 📄 **See [HARDWARE.md](HARDWARE.md) for complete specifications, pinouts, wiring diagrams, and assembly notes.**
 
@@ -86,7 +87,7 @@ A single master controller coordinates all pixels via a **simple broadcast proto
 
 ### 3.2 Power Distribution
 
-* Central regulated **5 V supply**
+* 19V 6A power supply with stepdown buck converters (5V output) per 6 pixel cluster
 * Power injected directly into each pixel
 * Displays are **not powered via USB**
 * Local decoupling per module
@@ -112,7 +113,7 @@ Each pixel module exposes **two conductors**:
 
 ### Device Provisioning & Discovery
 
-For details on how devices are discovered, identified, and assigned unique IDs in the network, see the [DISCOVERY_AND_PROVISIONING.md](DISCOVERY_AND_PROVISIONING.md) document. It outlines the full protocol and user workflow for reliable setup and mapping of ESP32 pixel modules.
+For details on how devices are discovered, identified, and assigned unique IDs (indexes) in the network, see the [DISCOVERY_AND_PROVISIONING.md](DISCOVERY_AND_PROVISIONING.md) document. It outlines the full protocol and user workflow for reliable setup and mapping of ESP32 pixel modules.
 
 ### Protocol Overview
 
@@ -158,11 +159,10 @@ Measured performance:
 * ~30 FPS per display
 * No visible tearing or flicker
 
-### Why local rendering matters
+### Why local rendering?
 
-* No per-pixel image streaming
-* No shared memory
-* Visual coherence achieved through **shared intent**, not shared pixels
+* No high cost video streaming
+* Visual coherence achieved through low overhead **shared intent**
 
 ---
 
@@ -175,19 +175,20 @@ Measured performance:
 * 3D printed and physically validated
 * Internal wiring only
 * Short internal jumpers between MCU and display
-* Single 3-wire external lead per module
+* Single 2-wire external lead per module
 
 ### Assembly
 
 * Modules mount into a larger frame
-* Consistent spacing becomes part of the visual language
+* Consistent spacing
 * No exposed electronics on the front face
 
 The repository includes:
 
-* printable enclosure files
-* assembly-ready geometry
-* revisions used in physical prototypes
+* printable enclosure STL files
+* prototype photos
+* links to youtube videos of prototypes in operation
+* source code for master controller and pixel nodes, with multiple hardware profiles
 
 ---
 
@@ -199,6 +200,8 @@ The repository includes an **HTML + JavaScript simulator** (`twenty-four-times-s
 * test animation ideas
 * design transition behavior
 * validate legibility and motion
+
+Simply view it with a browser, using Live Server or any other local dev web server. No external dependencies.
 
 This simulator:
 
@@ -235,6 +238,8 @@ These modes will evolve once the clock mode is complete and stable.
 * ✅ Multiple physical pixel modules built
 * ✅ Display + MCU integration working
 * ✅ ~30 FPS buffered animation achieved
+* ✅ ESP-NOW communication working
+* ✅ Assembly of MVP - 2 x 3 array (see youtube video) with master sending digits to 6 pixels
 * 🔲 Persistent pixel ID provisioning
 * 🔲 Final master → node protocol implementation
 * 🔲 Full 8 × 3 mechanical assembly
