@@ -171,6 +171,9 @@ const uint8_t digitPixelIds[6] = {0, 1, 8, 9, 16, 17};
 // Current color for digits mode
 uint8_t currentDigitColor = 0;
 
+// Current speed for digits mode (duration in seconds)
+float currentDigitSpeed = 2.0;
+
 // ===== FUNCTION DECLARATIONS =====
 void drawManualScreen();
 void handleManualTouch(uint16_t x, uint16_t y);
@@ -179,7 +182,6 @@ void sendPing();
 void drawDigitsScreen();
 void handleDigitsTouch(uint16_t x, uint16_t y);
 void sendDigitPattern(uint8_t digit);
-void sendDigitColorChange();
 
 // ===== FUNCTIONS =====
 
@@ -517,6 +519,30 @@ void drawDigitsScreen() {
   tft.setCursor(145, 202);
   tft.print("#");
   tft.print(currentDigitColor);
+  
+  // Speed control row
+  tft.setCursor(200, 195);
+  tft.println("Speed:");
+  
+  // Speed slower button
+  tft.fillRoundRect(240, 195, 30, 25, 4, TFT_PURPLE);
+  tft.setTextColor(TFT_WHITE, TFT_PURPLE);
+  tft.setTextSize(2);
+  tft.setCursor(250, 200);
+  tft.print("-");
+  
+  // Speed faster button
+  tft.fillRoundRect(275, 195, 30, 25, 4, TFT_PURPLE);
+  tft.setTextColor(TFT_WHITE, TFT_PURPLE);
+  tft.setTextSize(2);
+  tft.setCursor(285, 200);
+  tft.print("+");
+  
+  // Show current speed
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setTextSize(1);
+  tft.setCursor(200, 210);
+  tft.printf("%.1fs", currentDigitSpeed);
 }
 
 void handleDigitsTouch(uint16_t x, uint16_t y) {
@@ -567,14 +593,24 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
     // Color prev button
     if (x >= 50 && x <= 90) {
       currentDigitColor = (currentDigitColor == 0) ? (COLOR_PALETTE_SIZE - 1) : currentDigitColor - 1;
-      sendDigitColorChange();
       drawDigitsScreen();
       return;
     }
     // Color next button
     if (x >= 95 && x <= 135) {
       currentDigitColor = (currentDigitColor + 1) % COLOR_PALETTE_SIZE;
-      sendDigitColorChange();
+      drawDigitsScreen();
+      return;
+    }
+    // Speed slower button
+    if (x >= 240 && x <= 270) {
+      if (currentDigitSpeed < 5.0) currentDigitSpeed += 0.5;
+      drawDigitsScreen();
+      return;
+    }
+    // Speed faster button
+    if (x >= 275 && x <= 305) {
+      if (currentDigitSpeed > 0.5) currentDigitSpeed -= 0.5;
       drawDigitsScreen();
       return;
     }
@@ -587,9 +623,9 @@ void sendDigitPattern(uint8_t digit) {
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
   
-  // Use random transition and duration for animation
+  // Use random transition and set duration from speed control
   packet.angleCmd.transition = getRandomTransition();
-  packet.angleCmd.duration = floatToDuration(getRandomDuration());
+  packet.angleCmd.duration = floatToDuration(currentDigitSpeed);
   
   // Clear all pixels first (set to 225° with low opacity)
   for (int i = 0; i < MAX_PIXELS; i++) {
@@ -649,46 +685,6 @@ void sendDigitPattern(uint8_t digit) {
     tft.setTextSize(1);
     tft.setCursor(140, 160);
     tft.print("ERROR");
-  }
-}
-
-void sendDigitColorChange() {
-  ESPNowPacket packet;
-  packet.angleCmd.command = CMD_SET_ANGLES;
-  
-  // Use instant transition to only change colors
-  packet.angleCmd.transition = TRANSITION_INSTANT;
-  packet.angleCmd.duration = floatToDuration(0.1); // Very short duration
-  
-  // Keep all pixels at current angles, just update colors on the 6 digit pixels
-  for (int i = 0; i < MAX_PIXELS; i++) {
-    // Don't change angles - use 0° which tells pixel to keep current position
-    packet.angleCmd.setPixelAngles(i, 0, 0, 0, DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
-    
-    // Check if this is one of the 6 digit pixels
-    bool isDigitPixel = false;
-    for (int j = 0; j < 6; j++) {
-      if (i == digitPixelIds[j]) {
-        isDigitPixel = true;
-        break;
-      }
-    }
-    
-    if (isDigitPixel) {
-      // Update color on digit pixels, keep current opacity
-      packet.angleCmd.setPixelStyle(i, currentDigitColor, 255);
-    } else {
-      // Keep other pixels unchanged with low opacity
-      packet.angleCmd.setPixelStyle(i, currentDigitColor, 50);
-    }
-  }
-  
-  // Send the packet
-  if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {
-    Serial.print("Changed digit color to: ");
-    Serial.println(currentDigitColor);
-  } else {
-    Serial.println("Failed to send color change packet!");
   }
 }
 
