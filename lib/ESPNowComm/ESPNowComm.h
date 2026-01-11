@@ -223,12 +223,24 @@ struct __attribute__((packed)) IdentifyPacket {
   uint8_t pixelId;      // Which pixel to identify (0-23, or 255 for all)
 };
 
+// Set pixel ID packet - assigns a persistent ID to a pixel (for provisioning)
+// Master sends this to a specific MAC address during provisioning
+struct __attribute__((packed)) SetPixelIdPacket {
+  CommandType command;    // CMD_SET_PIXEL_ID
+  uint8_t targetMac[6];   // MAC address of target pixel (or broadcast)
+  uint8_t pixelId;        // ID to assign (0-23)
+};
+
+// Special value indicating pixel has not been provisioned
+#define PIXEL_ID_UNPROVISIONED 255
+
 // Generic packet union for easy handling
 union ESPNowPacket {
   CommandType command;
   AngleCommandPacket angleCmd;
   PingPacket ping;
   IdentifyPacket identify;
+  SetPixelIdPacket setPixelId;
   uint8_t raw[250];  // ESP-NOW max packet size
 };
 

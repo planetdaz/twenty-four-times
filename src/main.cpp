@@ -3,15 +3,24 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_GC9A01A.h>
 #include <ESPNowComm.h>
+#include <Preferences.h>
 
 // Proof of concept: Three rotating clock hands on a 240x240 circular display
 // Based on the twenty-four-times simulation
 // Now with ESP-NOW communication for synchronized multi-pixel operation
 
 // ===== PIXEL CONFIGURATION =====
-// This pixel's ID (0-23). In production, this would be stored in NVS.
-// For now, we'll set it via serial command or hardcode different values per device.
-#define PIXEL_ID 4  // Change this for each device (0, 1, 2, etc.)
+// Pixel ID is loaded from NVS (non-volatile storage) on startup.
+// Use CMD_SET_PIXEL_ID command from master to provision each pixel.
+// Value of 255 (PIXEL_ID_UNPROVISIONED) indicates unprovisionied state.
+
+// NVS storage
+Preferences preferences;
+const char* NVS_NAMESPACE = "pixel";
+const char* NVS_KEY_PIXEL_ID = "id";
+
+// Pixel ID (loaded from NVS in setup, or PIXEL_ID_UNPROVISIONED if not set)
+uint8_t pixelId = PIXEL_ID_UNPROVISIONED;
 
 // 240x240 RGB565 buffer (~115 KB) - allocated in setup() to avoid boot crash
 GFXcanvas16* canvas = nullptr;
@@ -430,9 +439,9 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       const AngleCommandPacket& cmd = packet->angleCmd;
 
       // Check if this pixel is targeted by this command
-      if (!cmd.isPixelTargeted(PIXEL_ID)) {
+      if (!cmd.isPixelTargeted(pixelId)) {
         Serial.print("ESP-NOW: Pixel ");
-        Serial.print(PIXEL_ID);
+        Serial.print(pixelId);
         Serial.println(" not targeted, ignoring command");
         break;
       }
@@ -442,15 +451,15 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
 
       // Extract angles for this pixel
       float target1, target2, target3;
-      cmd.getPixelAngles(PIXEL_ID, target1, target2, target3);
+      cmd.getPixelAngles(pixelId, target1, target2, target3);
 
       // Extract directions for this pixel
       RotationDirection dir1, dir2, dir3;
-      cmd.getPixelDirections(PIXEL_ID, dir1, dir2, dir3);
+      cmd.getPixelDirections(pixelId, dir1, dir2, dir3);
 
       // Extract color and opacity for this pixel
-      uint8_t colorIndex = cmd.colorIndices[PIXEL_ID];
-      uint8_t targetOpacity = cmd.opacities[PIXEL_ID];
+      uint8_t colorIndex = cmd.colorIndices[pixelId];
+      uint8_t targetOpacity = cmd.opacities[pixelId];
 
       // Get transition type directly (no mapping needed - they're the same now!)
       TransitionType easing = cmd.transition;
@@ -505,7 +514,7 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
 
       // Debug output
       Serial.print("Pixel ");
-      Serial.print(PIXEL_ID);
+      Serial.print(pixelId);
       Serial.print(": Targets=(");
       Serial.print(target1, 0);
       Serial.print(",");
@@ -556,10 +565,10 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
     case CMD_IDENTIFY: {
       const IdentifyPacket& cmd = packet->identify;
       // Check if this command is for us (or for all pixels)
-      if (cmd.pixelId == PIXEL_ID || cmd.pixelId == 255) {
+      if (cmd.pixelId == pixelId || cmd.pixelId == 255) {
         identifyMode = true;
         Serial.print("ESP-NOW: Identify mode activated for pixel ");
-        Serial.println(PIXEL_ID);
+        Serial.println(pixelId);
       }
       break;
     }
@@ -572,6 +581,47 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       Serial.println("ESP-NOW: Reset command received");
       // Could reset to default state here
       break;
+
+    case CMD_SET_PIXEL_ID: {
+      const SetPixelIdPacket& cmd = packet->setPixelId;
+
+      // Get this device's MAC address
+      uint8_t myMac[6];
+      WiFi.macAddress(myMac);
+
+      // Check if this command is for us (MAC match or broadcast)
+      bool isBroadcast = (cmd.targetMac[0] == 0xFF && cmd.targetMac[1] == 0xFF &&
+                          cmd.targetMac[2] == 0xFF && cmd.targetMac[3] == 0xFF &&
+                          cmd.targetMac[4] == 0xFF && cmd.targetMac[5] == 0xFF);
+      bool macMatches = (memcmp(cmd.targetMac, myMac, 6) == 0);
+
+      if (isBroadcast || macMatches) {
+        // Store the new pixel ID in NVS
+        preferences.begin(NVS_NAMESPACE, false);  // Read-write mode
+        preferences.putUChar(NVS_KEY_PIXEL_ID, cmd.pixelId);
+        preferences.end();
+
+        // Update runtime variable
+        uint8_t oldId = pixelId;
+        pixelId = cmd.pixelId;
+
+        Serial.print("ESP-NOW: Pixel ID assigned: ");
+        Serial.print(oldId);
+        Serial.print(" -> ");
+        Serial.println(pixelId);
+        Serial.println("ID stored in NVS (persists across reboots)");
+
+        // Show visual confirmation - briefly flash green
+        canvas->fillScreen(0x07E0);  // Green
+        canvas->setTextColor(0x0000);  // Black text
+        canvas->setTextSize(8);
+        canvas->setCursor(pixelId < 10 ? 95 : 65, 85);
+        canvas->print(pixelId);
+        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        delay(500);
+      }
+      break;
+    }
 
     default:
       Serial.print("ESP-NOW: Unknown command: ");
@@ -618,12 +668,21 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
+  // ---- Load Pixel ID from NVS ----
+  preferences.begin(NVS_NAMESPACE, true);  // Read-only mode
+  pixelId = preferences.getUChar(NVS_KEY_PIXEL_ID, PIXEL_ID_UNPROVISIONED);
+  preferences.end();
+
   // ---- Board Identification ----
   Serial.println("\n========== TWENTY-FOUR TIMES - PIXEL NODE ==========");
   Serial.print("Board: ");
   Serial.println(BOARD_NAME);
   Serial.print("Pixel ID: ");
-  Serial.println(PIXEL_ID);
+  if (pixelId == PIXEL_ID_UNPROVISIONED) {
+    Serial.println("UNPROVISIONED (255)");
+  } else {
+    Serial.println(pixelId);
+  }
   Serial.println("====================================================\n");
 
   // ---- Memory Statistics ----
@@ -729,7 +788,7 @@ void setup() {
   // ---- ESP-NOW ----
   Serial.println("\n========== ESP-NOW INIT ==========");
   Serial.print("Pixel ID: ");
-  Serial.println(PIXEL_ID);
+  Serial.println(pixelId);
 
   if (ESPNowComm::initReceiver(ESPNOW_CHANNEL)) {
     ESPNowComm::setReceiveCallback(onPacketReceived);
@@ -756,6 +815,25 @@ void loop() {
     errorState = true;
   }
 
+  // ---- Unprovisioned State Display ----
+  // If pixel has no assigned ID, show green screen with "?" and wait for provisioning
+  if (pixelId == PIXEL_ID_UNPROVISIONED) {
+    canvas->fillScreen(0x07E0);  // Green background
+
+    // Draw large white question mark in the center
+    canvas->setTextColor(GC9A01A_WHITE);
+    canvas->setTextSize(15);
+    canvas->setCursor(85, 90);
+    canvas->print("?");
+
+    // Present unprovisioned frame to display
+    tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    // Slow update rate - just waiting for provisioning
+    delay(100);
+    return;
+  }
+
   // ---- Identify Mode Display ----
   // If in identify mode, show pixel ID and skip normal rendering
   if (identifyMode) {
@@ -766,9 +844,9 @@ void loop() {
     canvas->setTextSize(15);  // Very large text
 
     // Center the text (approximate positioning for single/double digit)
-    int xPos = (PIXEL_ID < 10) ? 85 : 55;
+    int xPos = (pixelId < 10) ? 85 : 55;
     canvas->setCursor(xPos, 90);
-    canvas->print(PIXEL_ID);
+    canvas->print(pixelId);
 
     // Present identify frame to display
     tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
