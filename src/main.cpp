@@ -623,6 +623,109 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       break;
     }
 
+    case CMD_DISCOVERY: {
+      const DiscoveryCommandPacket& cmd = packet->discovery;
+
+      // Get this device's MAC address
+      uint8_t myMac[6];
+      WiFi.macAddress(myMac);
+
+      // Check if we're in the exclude list
+      bool excluded = false;
+      for (uint8_t i = 0; i < cmd.excludeCount && i < 20; i++) {
+        if (memcmp(cmd.excludeMacs[i], myMac, 6) == 0) {
+          excluded = true;
+          break;
+        }
+      }
+
+      if (!excluded) {
+        // Show red background while responding (visual feedback)
+        canvas->fillScreen(0xF800);  // Red
+        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+        // Random delay (0-2000ms) to avoid packet collisions
+        uint16_t delayMs = random(2000);
+        Serial.print("ESP-NOW: Discovery received, responding in ");
+        Serial.print(delayMs);
+        Serial.println("ms");
+        delay(delayMs);
+
+        // Send response with our MAC and current ID
+        ESPNowPacket response;
+        response.discoveryResponse.command = CMD_DISCOVERY;
+        memcpy(response.discoveryResponse.mac, myMac, 6);
+        response.discoveryResponse.currentId = pixelId;
+
+        if (ESPNowComm::sendPacket(&response, sizeof(DiscoveryResponsePacket))) {
+          Serial.println("ESP-NOW: Discovery response sent");
+        } else {
+          Serial.println("ESP-NOW: Discovery response FAILED");
+        }
+
+        // Show green to indicate we responded
+        canvas->fillScreen(0x07E0);  // Green
+        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+      } else {
+        Serial.println("ESP-NOW: Discovery received but we're excluded");
+      }
+      break;
+    }
+
+    case CMD_HIGHLIGHT: {
+      const HighlightPacket& cmd = packet->highlight;
+
+      // Get this device's MAC address
+      uint8_t myMac[6];
+      WiFi.macAddress(myMac);
+
+      // Check if this command is for us
+      if (memcmp(cmd.targetMac, myMac, 6) == 0) {
+        Serial.print("ESP-NOW: Highlight state ");
+        Serial.println(cmd.state);
+
+        switch (cmd.state) {
+          case HIGHLIGHT_IDLE:
+            // Green bg, white "?"
+            canvas->fillScreen(0x07E0);  // Green
+            canvas->setTextColor(GC9A01A_WHITE);
+            canvas->setTextSize(15);
+            canvas->setCursor(85, 90);
+            canvas->print("?");
+            break;
+
+          case HIGHLIGHT_SELECTED:
+            // Blue border, black bg, yellow "?"
+            canvas->fillScreen(GC9A01A_BLACK);
+            // Draw blue border (thick circle outline)
+            for (int r = 115; r < 120; r++) {
+              canvas->drawCircle(CENTER_X, CENTER_Y, r, 0x001F);  // Blue
+            }
+            canvas->setTextColor(0xFFE0);  // Yellow
+            canvas->setTextSize(15);
+            canvas->setCursor(85, 90);
+            canvas->print("?");
+            break;
+
+          case HIGHLIGHT_ASSIGNED:
+            // Green checkmark on black bg
+            canvas->fillScreen(GC9A01A_BLACK);
+            canvas->setTextColor(0x07E0);  // Green
+            canvas->setTextSize(12);
+            canvas->setCursor(70, 80);
+            canvas->print("OK");  // Simple "OK" instead of checkmark symbol
+            // Also show the assigned ID below
+            canvas->setTextSize(6);
+            canvas->setCursor(pixelId < 10 ? 100 : 85, 150);
+            canvas->print(pixelId);
+            break;
+        }
+
+        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+      }
+      break;
+    }
+
     default:
       Serial.print("ESP-NOW: Unknown command: ");
       Serial.println(packet->command);

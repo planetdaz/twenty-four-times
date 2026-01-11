@@ -27,7 +27,9 @@ enum CommandType : uint8_t {
   CMD_PING = 0x02,            // Heartbeat/connectivity test
   CMD_RESET = 0x03,           // Reset all pixels to default state
   CMD_SET_PIXEL_ID = 0x04,    // Assign pixel ID (for provisioning)
-  CMD_IDENTIFY = 0x05         // Show pixel ID on screen (for identification)
+  CMD_IDENTIFY = 0x05,        // Show pixel ID on screen (for identification)
+  CMD_DISCOVERY = 0x06,       // Master requests pixels to respond with MAC
+  CMD_HIGHLIGHT = 0x07        // Highlight a specific pixel during assignment
 };
 
 // Transition/easing types (matches pixel's EasingType enum)
@@ -234,6 +236,35 @@ struct __attribute__((packed)) SetPixelIdPacket {
 // Special value indicating pixel has not been provisioned
 #define PIXEL_ID_UNPROVISIONED 255
 
+// Discovery command packet - master broadcasts to find all pixels
+// Pixels not in the exclude list respond with their MAC address
+struct __attribute__((packed)) DiscoveryCommandPacket {
+  CommandType command;           // CMD_DISCOVERY
+  uint8_t excludeCount;          // Number of MACs in exclude list (0-20)
+  uint8_t excludeMacs[20][6];    // MACs to exclude (already discovered)
+};
+
+// Discovery response packet - pixel responds with its MAC and current ID
+struct __attribute__((packed)) DiscoveryResponsePacket {
+  CommandType command;           // CMD_DISCOVERY (response uses same command type)
+  uint8_t mac[6];                // This pixel's MAC address
+  uint8_t currentId;             // Current assigned ID (or PIXEL_ID_UNPROVISIONED)
+};
+
+// Highlight states for provisioning UI
+enum HighlightState : uint8_t {
+  HIGHLIGHT_IDLE = 0,      // Green bg, white "?" - waiting
+  HIGHLIGHT_SELECTED = 1,  // Blue border, black bg, yellow "?" - currently selected
+  HIGHLIGHT_ASSIGNED = 2   // Green checkmark on black bg - assignment complete
+};
+
+// Highlight packet - visual feedback during assignment phase
+struct __attribute__((packed)) HighlightPacket {
+  CommandType command;           // CMD_HIGHLIGHT
+  uint8_t targetMac[6];          // MAC address of target pixel
+  HighlightState state;          // Highlight state to display
+};
+
 // Generic packet union for easy handling
 union ESPNowPacket {
   CommandType command;
@@ -241,6 +272,9 @@ union ESPNowPacket {
   PingPacket ping;
   IdentifyPacket identify;
   SetPixelIdPacket setPixelId;
+  DiscoveryCommandPacket discovery;
+  DiscoveryResponsePacket discoveryResponse;
+  HighlightPacket highlight;
   uint8_t raw[250];  // ESP-NOW max packet size
 };
 

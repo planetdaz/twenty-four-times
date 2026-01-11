@@ -68,11 +68,28 @@ enum ControlMode {
   MODE_MENU,        // Main menu - select mode
   MODE_SIMULATION,  // Random patterns like the simulation
   MODE_DIGITS,      // Display digits 0-9 with animations
-  MODE_IDENTIFY,    // Identify all pixels
+  MODE_PROVISION,   // Discovery and provisioning of pixels
   MODE_MANUAL       // Manual control (future)
 };
 
 ControlMode currentMode = MODE_MENU;
+
+// ===== PROVISIONING STATE =====
+enum ProvisionPhase {
+  PHASE_IDLE,        // Initial state - show start button
+  PHASE_DISCOVERING, // Broadcasting discovery, collecting MACs
+  PHASE_ASSIGNING    // Cycling through MACs, assigning IDs
+};
+
+ProvisionPhase provisionPhase = PHASE_IDLE;
+uint8_t discoveredMacs[MAX_PIXELS][6];  // Collected MAC addresses
+uint8_t discoveredIds[MAX_PIXELS];      // Current IDs of discovered pixels
+uint8_t discoveredCount = 0;            // Number of MACs discovered
+uint8_t selectedMacIndex = 0;           // Currently selected MAC for assignment
+uint8_t nextIdToAssign = 0;             // Next ID to assign
+unsigned long lastDiscoveryTime = 0;    // For discovery timing
+const unsigned long DISCOVERY_INTERVAL = 3000;  // Send discovery every 3 seconds
+const unsigned long DISCOVERY_WINDOW = 5000;    // Wait 5 seconds for responses
 
 // Timing
 unsigned long lastCommandTime = 0;
@@ -192,6 +209,13 @@ void sendPing();
 void drawDigitsScreen();
 void handleDigitsTouch(uint16_t x, uint16_t y);
 void sendTwoDigitPattern(uint8_t leftDigit, uint8_t rightDigit);
+// Provisioning functions
+void onMasterPacketReceived(const ESPNowPacket* packet, size_t len);
+void drawProvisionScreen();
+void handleProvisionTouch(uint16_t x, uint16_t y);
+void sendDiscoveryCommand();
+void sendHighlightCommand(uint8_t* targetMac, HighlightState state);
+void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId);
 
 // ===== FUNCTIONS =====
 
@@ -296,15 +320,15 @@ void drawMenu() {
   tft.setCursor(180, 125);
   tft.println("Display 0-9");
 
-  // Button 3: Identify (bottom left)
+  // Button 3: Provision (bottom left)
   tft.fillRoundRect(10, 160, 150, 60, 8, TFT_PURPLE);
   tft.setTextColor(TFT_WHITE, TFT_PURPLE);
   tft.setTextSize(2);
-  tft.setCursor(35, 175);
-  tft.println("Identify");
+  tft.setCursor(30, 175);
+  tft.println("Provision");
   tft.setTextSize(1);
-  tft.setCursor(30, 195);
-  tft.println("Show pixel IDs");
+  tft.setCursor(25, 195);
+  tft.println("Discover & assign");
 
   // Button 4: Manual (bottom right)
   tft.fillRoundRect(170, 160, 140, 60, 8, TFT_ORANGE);
@@ -327,9 +351,9 @@ ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
   if (x >= 170 && x <= 310 && y >= 90 && y <= 150) {
     return MODE_DIGITS;
   }
-  // Button 3: Identify (10, 160, 150, 60)
+  // Button 3: Provision (10, 160, 150, 60)
   if (x >= 10 && x <= 160 && y >= 160 && y <= 220) {
-    return MODE_IDENTIFY;
+    return MODE_PROVISION;
   }
   // Button 4: Manual (170, 160, 140, 60)
   if (x >= 170 && x <= 310 && y >= 160 && y <= 220) {
@@ -406,37 +430,348 @@ void sendRandomPattern() {
   }
 }
 
-void sendIdentifyCommand(uint8_t pixelId) {
+// ===== PROVISIONING FUNCTIONS =====
+
+// Receive callback for discovery responses from pixels
+void onMasterPacketReceived(const ESPNowPacket* packet, size_t len) {
+  if (packet->command == CMD_DISCOVERY && provisionPhase == PHASE_DISCOVERING) {
+    const DiscoveryResponsePacket& resp = packet->discoveryResponse;
+
+    // Check if this MAC is already in our list
+    bool duplicate = false;
+    for (uint8_t i = 0; i < discoveredCount; i++) {
+      if (memcmp(discoveredMacs[i], resp.mac, 6) == 0) {
+        duplicate = true;
+        break;
+      }
+    }
+
+    if (!duplicate && discoveredCount < MAX_PIXELS) {
+      // Add to discovered list
+      memcpy(discoveredMacs[discoveredCount], resp.mac, 6);
+      discoveredIds[discoveredCount] = resp.currentId;
+      discoveredCount++;
+
+      Serial.print("Discovered pixel: ");
+      for (int i = 0; i < 6; i++) {
+        if (i > 0) Serial.print(":");
+        Serial.printf("%02X", resp.mac[i]);
+      }
+      Serial.print(" (ID: ");
+      if (resp.currentId == PIXEL_ID_UNPROVISIONED) {
+        Serial.print("unprovisioned");
+      } else {
+        Serial.print(resp.currentId);
+      }
+      Serial.println(")");
+    }
+  }
+}
+
+// Format MAC address for display
+void formatMac(uint8_t* mac, char* buffer) {
+  sprintf(buffer, "%02X:%02X:%02X:%02X:%02X:%02X",
+          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+// Send discovery command
+void sendDiscoveryCommand() {
   ESPNowPacket packet;
-  packet.identify.command = CMD_IDENTIFY;
-  packet.identify.pixelId = pixelId;
+  packet.discovery.command = CMD_DISCOVERY;
+  packet.discovery.excludeCount = min(discoveredCount, (uint8_t)20);
 
-  if (ESPNowComm::sendPacket(&packet, sizeof(IdentifyPacket))) {
-    Serial.print("Sent IDENTIFY command for pixel ");
-    if (pixelId == 255) {
-      Serial.println("ALL");
-    } else {
-      Serial.println(pixelId);
-    }
+  // Copy already discovered MACs to exclude list
+  for (uint8_t i = 0; i < packet.discovery.excludeCount; i++) {
+    memcpy(packet.discovery.excludeMacs[i], discoveredMacs[i], 6);
+  }
 
-    // Update display
-    tft.fillScreen(TFT_BLUE);
-    tft.setTextColor(TFT_WHITE, TFT_BLUE);
-    tft.setTextSize(3);
-    tft.setCursor(40, 80);
-    tft.println("IDENTIFY MODE");
+  if (ESPNowComm::sendPacket(&packet, sizeof(DiscoveryCommandPacket))) {
+    Serial.print("Sent DISCOVERY command (excluding ");
+    Serial.print(packet.discovery.excludeCount);
+    Serial.println(" MACs)");
+  }
+}
 
+// Send highlight command to a specific pixel
+void sendHighlightCommand(uint8_t* targetMac, HighlightState state) {
+  ESPNowPacket packet;
+  packet.highlight.command = CMD_HIGHLIGHT;
+  memcpy(packet.highlight.targetMac, targetMac, 6);
+  packet.highlight.state = state;
+
+  ESPNowComm::sendPacket(&packet, sizeof(HighlightPacket));
+}
+
+// Send pixel ID assignment command
+void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId) {
+  ESPNowPacket packet;
+  packet.setPixelId.command = CMD_SET_PIXEL_ID;
+  memcpy(packet.setPixelId.targetMac, targetMac, 6);
+  packet.setPixelId.pixelId = newId;
+
+  if (ESPNowComm::sendPacket(&packet, sizeof(SetPixelIdPacket))) {
+    Serial.print("Assigned ID ");
+    Serial.print(newId);
+    Serial.println(" to pixel");
+  }
+}
+
+// Draw the provisioning screen based on current phase
+void drawProvisionScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title
+  tft.setTextColor(COLOR_ACCENT, COLOR_BG);
+  tft.setTextSize(2);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("Provision Pixels", 160, 5);
+  tft.setTextDatum(TL_DATUM);
+
+  if (provisionPhase == PHASE_IDLE) {
+    // Show start button and info
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setTextSize(1);
+    tft.setCursor(10, 40);
+    tft.println("Discover and assign IDs to pixels.");
+    tft.setCursor(10, 55);
+    tft.println("Pixels will flash during discovery.");
+
+    // Start Discovery button
+    tft.fillRoundRect(60, 90, 200, 50, 8, TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
     tft.setTextSize(2);
-    tft.setCursor(60, 120);
-    if (pixelId == 255) {
-      tft.println("All Pixels");
-    } else {
-      tft.print("Pixel ID: ");
-      tft.println(pixelId);
+    tft.setCursor(75, 105);
+    tft.println("Start Discovery");
+
+    // Back button
+    tft.fillRoundRect(110, 170, 100, 40, 8, TFT_DARKGREY);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setTextSize(2);
+    tft.setCursor(135, 180);
+    tft.println("Back");
+
+  } else if (provisionPhase == PHASE_DISCOVERING) {
+    // Show discovery progress
+    tft.setTextColor(TFT_YELLOW, COLOR_BG);
+    tft.setTextSize(2);
+    tft.setCursor(60, 50);
+    tft.println("Discovering...");
+
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setTextSize(3);
+    tft.setCursor(100, 90);
+    tft.print("Found: ");
+    tft.print(discoveredCount);
+    tft.println("/24");
+
+    // Stop button
+    tft.fillRoundRect(20, 160, 130, 50, 8, TFT_RED);
+    tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.setTextSize(2);
+    tft.setCursor(55, 175);
+    tft.println("Stop");
+
+    // Begin Assignment button (only if we have discovered some)
+    if (discoveredCount > 0) {
+      tft.fillRoundRect(170, 160, 130, 50, 8, TFT_DARKGREEN);
+      tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+      tft.setTextSize(2);
+      tft.setCursor(190, 175);
+      tft.println("Assign");
     }
 
-  } else {
-    Serial.println("Failed to send IDENTIFY command!");
+  } else if (provisionPhase == PHASE_ASSIGNING) {
+    // Show assignment UI
+    char macStr[18];
+    formatMac(discoveredMacs[selectedMacIndex], macStr);
+
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setTextSize(1);
+    tft.setCursor(10, 35);
+    tft.print("Pixel ");
+    tft.print(selectedMacIndex + 1);
+    tft.print(" of ");
+    tft.println(discoveredCount);
+
+    // Show MAC address
+    tft.setTextSize(1);
+    tft.setCursor(10, 55);
+    tft.print("MAC: ");
+    tft.println(macStr);
+
+    // Show current ID
+    tft.setCursor(10, 70);
+    tft.print("Current ID: ");
+    if (discoveredIds[selectedMacIndex] == PIXEL_ID_UNPROVISIONED) {
+      tft.setTextColor(TFT_YELLOW, COLOR_BG);
+      tft.println("None");
+    } else {
+      tft.println(discoveredIds[selectedMacIndex]);
+    }
+
+    // Show next ID to assign
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
+    tft.setTextSize(2);
+    tft.setCursor(10, 95);
+    tft.print("Assign ID: ");
+    tft.setTextSize(3);
+    tft.println(nextIdToAssign);
+
+    // Prev/Next buttons
+    tft.fillRoundRect(10, 140, 60, 35, 4, TFT_DARKBLUE);
+    tft.setTextColor(TFT_WHITE, TFT_DARKBLUE);
+    tft.setTextSize(2);
+    tft.setCursor(20, 148);
+    tft.println("Prev");
+
+    tft.fillRoundRect(80, 140, 60, 35, 4, TFT_DARKBLUE);
+    tft.setCursor(90, 148);
+    tft.println("Next");
+
+    // Assign button
+    tft.fillRoundRect(160, 140, 70, 35, 4, TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+    tft.setCursor(165, 148);
+    tft.println("Assign");
+
+    // Skip button
+    tft.fillRoundRect(240, 140, 70, 35, 4, TFT_ORANGE);
+    tft.setTextColor(TFT_WHITE, TFT_ORANGE);
+    tft.setCursor(255, 148);
+    tft.println("Skip");
+
+    // Back button
+    tft.fillRoundRect(10, 190, 80, 35, 4, TFT_DARKGREY);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setCursor(25, 198);
+    tft.println("Back");
+
+    // Done button
+    tft.fillRoundRect(230, 190, 80, 35, 4, TFT_PURPLE);
+    tft.setTextColor(TFT_WHITE, TFT_PURPLE);
+    tft.setCursor(245, 198);
+    tft.println("Done");
+  }
+}
+
+// Handle touch in provisioning mode
+void handleProvisionTouch(uint16_t x, uint16_t y) {
+  if (provisionPhase == PHASE_IDLE) {
+    // Start Discovery button (60, 90, 200, 50)
+    if (x >= 60 && x <= 260 && y >= 90 && y <= 140) {
+      discoveredCount = 0;
+      selectedMacIndex = 0;
+      provisionPhase = PHASE_DISCOVERING;
+      lastDiscoveryTime = millis();
+      sendDiscoveryCommand();
+      drawProvisionScreen();
+      return;
+    }
+
+    // Back button (110, 170, 100, 40)
+    if (x >= 110 && x <= 210 && y >= 170 && y <= 210) {
+      currentMode = MODE_MENU;
+      drawMenu();
+      return;
+    }
+
+  } else if (provisionPhase == PHASE_DISCOVERING) {
+    // Stop button (20, 160, 130, 50)
+    if (x >= 20 && x <= 150 && y >= 160 && y <= 210) {
+      provisionPhase = PHASE_IDLE;
+      drawProvisionScreen();
+      return;
+    }
+
+    // Assign button (170, 160, 130, 50)
+    if (x >= 170 && x <= 300 && y >= 160 && y <= 210 && discoveredCount > 0) {
+      provisionPhase = PHASE_ASSIGNING;
+      selectedMacIndex = 0;
+      nextIdToAssign = 0;
+      // Highlight the first pixel
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
+      drawProvisionScreen();
+      return;
+    }
+
+  } else if (provisionPhase == PHASE_ASSIGNING) {
+    // Prev button (10, 140, 60, 35)
+    if (x >= 10 && x <= 70 && y >= 140 && y <= 175) {
+      // Un-highlight current
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      // Move to previous
+      if (selectedMacIndex > 0) {
+        selectedMacIndex--;
+      } else {
+        selectedMacIndex = discoveredCount - 1;
+      }
+      // Highlight new selection
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
+      drawProvisionScreen();
+      return;
+    }
+
+    // Next button (80, 140, 60, 35)
+    if (x >= 80 && x <= 140 && y >= 140 && y <= 175) {
+      // Un-highlight current
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      // Move to next
+      selectedMacIndex = (selectedMacIndex + 1) % discoveredCount;
+      // Highlight new selection
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
+      drawProvisionScreen();
+      return;
+    }
+
+    // Assign button (160, 140, 70, 35)
+    if (x >= 160 && x <= 230 && y >= 140 && y <= 175) {
+      // Assign the ID
+      sendAssignIdCommand(discoveredMacs[selectedMacIndex], nextIdToAssign);
+      // Update local state
+      discoveredIds[selectedMacIndex] = nextIdToAssign;
+      // Show assigned state
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_ASSIGNED);
+      delay(500);  // Brief pause to see confirmation
+      // Move to next and increment ID
+      nextIdToAssign++;
+      if (selectedMacIndex < discoveredCount - 1) {
+        selectedMacIndex++;
+        sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
+      }
+      drawProvisionScreen();
+      return;
+    }
+
+    // Skip button (240, 140, 70, 35)
+    if (x >= 240 && x <= 310 && y >= 140 && y <= 175) {
+      // Un-highlight current
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      // Move to next without assigning
+      selectedMacIndex = (selectedMacIndex + 1) % discoveredCount;
+      // Highlight new selection
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
+      drawProvisionScreen();
+      return;
+    }
+
+    // Back button (10, 190, 80, 35)
+    if (x >= 10 && x <= 90 && y >= 190 && y <= 225) {
+      // Un-highlight current
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      provisionPhase = PHASE_DISCOVERING;
+      drawProvisionScreen();
+      return;
+    }
+
+    // Done button (230, 190, 80, 35)
+    if (x >= 230 && x <= 310 && y >= 190 && y <= 225) {
+      // Un-highlight current
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      provisionPhase = PHASE_IDLE;
+      currentMode = MODE_MENU;
+      drawMenu();
+      return;
+    }
   }
 }
 
@@ -1119,8 +1454,10 @@ void setup() {
 
   delay(1000);
 
-  // Initialize ESP-NOW in sender mode
+  // Initialize ESP-NOW in sender mode (also enables receiving for discovery responses)
   if (ESPNowComm::initSender(ESPNOW_CHANNEL)) {
+    // Register receive callback for discovery responses
+    ESPNowComm::setReceiveCallback(onMasterPacketReceived);
 
     tft.fillScreen(COLOR_BG);
     tft.setTextColor(COLOR_ACCENT, COLOR_BG);
@@ -1178,8 +1515,9 @@ void loop() {
             drawDigitsScreen();
             lastPingTime = currentTime;  // Initialize ping timer
             break;
-          case MODE_IDENTIFY:
-            sendIdentifyCommand(255);
+          case MODE_PROVISION:
+            provisionPhase = PHASE_IDLE;
+            drawProvisionScreen();
             break;
           case MODE_MANUAL:
             drawManualScreen();
@@ -1195,6 +1533,9 @@ void loop() {
     } else if (currentMode == MODE_DIGITS) {
       // Digits mode has its own touch handler
       handleDigitsTouch(tx, ty);
+    } else if (currentMode == MODE_PROVISION) {
+      // Provision mode has its own touch handler
+      handleProvisionTouch(tx, ty);
     } else {
       // Any touch in other modes returns to menu
       currentMode = MODE_MENU;
@@ -1260,9 +1601,17 @@ void loop() {
       break;
     }
 
-    case MODE_IDENTIFY: {
-      // Identify mode runs once, then waits for touch to return to menu
-      // Display stays on identify screen until touched
+    case MODE_PROVISION: {
+      // Handle periodic discovery during PHASE_DISCOVERING
+      if (provisionPhase == PHASE_DISCOVERING) {
+        // Send discovery command periodically and update display
+        if (currentTime - lastDiscoveryTime >= DISCOVERY_INTERVAL) {
+          sendDiscoveryCommand();
+          lastDiscoveryTime = currentTime;
+          // Redraw to update count
+          drawProvisionScreen();
+        }
+      }
       break;
     }
 
