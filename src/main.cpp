@@ -562,6 +562,8 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       break;
     }
 
+    // TODO: CMD_IDENTIFY is currently unused - master uses CMD_HIGHLIGHT instead.
+    //       Either integrate into provisioning UI or remove.
     case CMD_IDENTIFY: {
       const IdentifyPacket& cmd = packet->identify;
       // Check if this command is for us (or for all pixels)

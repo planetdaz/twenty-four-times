@@ -28,6 +28,8 @@ enum CommandType : uint8_t {
   CMD_RESET = 0x03,           // Reset all pixels to default state
   CMD_SET_PIXEL_ID = 0x04,    // Assign pixel ID (for provisioning)
   CMD_IDENTIFY = 0x05,        // Show pixel ID on screen (for identification)
+                              // TODO: Currently unused - master uses CMD_HIGHLIGHT instead.
+                              //       Either integrate into provisioning UI or remove.
   CMD_DISCOVERY = 0x06,       // Master requests pixels to respond with MAC
   CMD_HIGHLIGHT = 0x07        // Highlight a specific pixel during assignment
 };
