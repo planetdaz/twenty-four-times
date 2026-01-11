@@ -164,9 +164,13 @@ DigitPattern digitPatterns[12] = {
    {50, 50, 50, 50, 50, 50}}
 };
 
-// Pixel ID mapping for the 6-pixel digit display
-// Physical wiring: IDs 0,1 (top), 8,9 (middle), 16,17 (bottom)
-const uint8_t digitPixelIds[6] = {0, 1, 8, 9, 16, 17};
+// Pixel ID mappings for two-digit display (12 pixels in 3 rows × 4 columns)
+// Layout:
+//   Row 0: [0]  [1]  | [2]  [3]   <- Left digit top, Right digit top
+//   Row 1: [8]  [9]  | [10] [11]  <- Left digit mid, Right digit mid
+//   Row 2: [16] [17] | [18] [19]  <- Left digit bot, Right digit bot
+const uint8_t digit1PixelIds[6] = {0, 1, 8, 9, 16, 17};    // Left digit
+const uint8_t digit2PixelIds[6] = {2, 3, 10, 11, 18, 19};  // Right digit
 
 // Current color for digits mode
 uint8_t currentDigitColor = 0;
@@ -174,10 +178,10 @@ uint8_t currentDigitColor = 0;
 // Current speed for digits mode (duration in seconds)
 float currentDigitSpeed = 2.0;
 
-// Auto-cycle mode variables
+// Auto-cycle mode variables (cycles 00-99 for two-digit display)
 bool autoCycleEnabled = false;
-uint8_t autoCycleDigit = 0;
-bool autoCycleDirection = true; // true = 0->9, false = 9->0
+uint8_t autoCycleNumber = 0;        // Current number (0-99)
+bool autoCycleDirection = true;     // true = 0->99, false = 99->0
 unsigned long lastAutoCycleTime = 0;
 
 // ===== FUNCTION DECLARATIONS =====
@@ -187,7 +191,7 @@ void sendManualCommand(bool allPixels);
 void sendPing();
 void drawDigitsScreen();
 void handleDigitsTouch(uint16_t x, uint16_t y);
-void sendDigitPattern(uint8_t digit);
+void sendTwoDigitPattern(uint8_t leftDigit, uint8_t rightDigit);
 
 // ===== FUNCTIONS =====
 
@@ -563,38 +567,38 @@ void drawDigitsScreen() {
 }
 
 void handleDigitsTouch(uint16_t x, uint16_t y) {
-  // Check digit buttons (0-4, top row)
+  // Check digit buttons (0-4, top row) - shows as "X " (digit left, space right)
   if (y >= 45 && y <= 85) {
     for (int i = 0; i <= 4; i++) {
       int buttonX = 10 + i * 60;
       if (x >= buttonX && x <= buttonX + 50) {
-        sendDigitPattern(i);
+        sendTwoDigitPattern(i, 11);  // digit on left, space on right
         return;
       }
     }
   }
-  
-  // Check digit buttons (5-9, bottom row)
+
+  // Check digit buttons (5-9, bottom row) - shows as "X " (digit left, space right)
   if (y >= 95 && y <= 135) {
     for (int i = 5; i <= 9; i++) {
       int buttonX = 10 + (i - 5) * 60;
       if (x >= buttonX && x <= buttonX + 50) {
-        sendDigitPattern(i);
+        sendTwoDigitPattern(i, 11);  // digit on left, space on right
         return;
       }
     }
   }
-  
+
   // Check special character buttons
   if (y >= 145 && y <= 185) {
-    // Colon button
+    // Colon button - shows ": " (colon left, space right)
     if (x >= 10 && x <= 60) {
-      sendDigitPattern(10); // ':' is index 10
+      sendTwoDigitPattern(10, 11);  // colon on left, space on right
       return;
     }
-    // Space button
+    // Space button - shows "  " (space both)
     if (x >= 70 && x <= 120) {
-      sendDigitPattern(11); // ' ' is index 11
+      sendTwoDigitPattern(11, 11);  // space on both
       return;
     }
     // Auto-cycle toggle button
@@ -602,7 +606,7 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
       autoCycleEnabled = !autoCycleEnabled;
       if (autoCycleEnabled) {
         // Reset auto-cycle state when enabling
-        autoCycleDigit = 0;
+        autoCycleNumber = 0;
         autoCycleDirection = true;
         lastAutoCycleTime = millis();
       }
@@ -646,75 +650,74 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
   }
 }
 
-void sendDigitPattern(uint8_t digit) {
-  if (digit > 11) return; // Invalid digit
+// Send two digits pattern to 12 pixels (3 rows × 4 columns)
+// Only the 12 targeted pixels will respond; others continue their current animation
+void sendTwoDigitPattern(uint8_t leftDigit, uint8_t rightDigit) {
+  if (leftDigit > 11 || rightDigit > 11) return; // Invalid digit
 
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
-  packet.angleCmd.clearTargetMask();  // Target all pixels (broadcast mode)
+
+  // Target only the 12 pixels used for the two-digit display
+  packet.angleCmd.clearTargetMask();
+  for (int i = 0; i < 6; i++) {
+    packet.angleCmd.setTargetPixel(digit1PixelIds[i]);
+    packet.angleCmd.setTargetPixel(digit2PixelIds[i]);
+  }
 
   // Use random transition and set duration from speed control
   packet.angleCmd.transition = getRandomTransition();
   packet.angleCmd.duration = floatToDuration(currentDigitSpeed);
-  
-  // Clear all pixels first (set to 225° with low opacity)
-  for (int i = 0; i < MAX_PIXELS; i++) {
-    // Random directions for each hand
-    RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    
-    packet.angleCmd.setPixelAngles(i, 225, 225, 225, dir1, dir2, dir3);
-    packet.angleCmd.setPixelStyle(i, currentDigitColor, 50);
-  }
-  
-  // Set the 6 pixels that make up the digit
-  DigitPattern& pattern = digitPatterns[digit];
+
+  // Set left digit (digit 1) pattern
+  DigitPattern& leftPattern = digitPatterns[leftDigit];
   for (int i = 0; i < 6; i++) {
-    uint8_t pixelId = digitPixelIds[i];
-    
+    uint8_t pixelId = digit1PixelIds[i];
+
     // Random directions for each hand
     RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
     RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
     RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    
+
     packet.angleCmd.setPixelAngles(pixelId,
-      pattern.angles[i][0],
-      pattern.angles[i][1],  
-      pattern.angles[i][2],
-      dir1,
-      dir2,
-      dir3
-    );
-    packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, pattern.opacity[i]);
+      leftPattern.angles[i][0],
+      leftPattern.angles[i][1],
+      leftPattern.angles[i][2],
+      dir1, dir2, dir3);
+    packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, leftPattern.opacity[i]);
   }
-  
+
+  // Set right digit (digit 2) pattern
+  DigitPattern& rightPattern = digitPatterns[rightDigit];
+  for (int i = 0; i < 6; i++) {
+    uint8_t pixelId = digit2PixelIds[i];
+
+    // Random directions for each hand
+    RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+
+    packet.angleCmd.setPixelAngles(pixelId,
+      rightPattern.angles[i][0],
+      rightPattern.angles[i][1],
+      rightPattern.angles[i][2],
+      dir1, dir2, dir3);
+    packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, rightPattern.opacity[i]);
+  }
+
   // Send the packet
   if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {
     const char* digitNames[] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", " "};
-    Serial.print("Sent digit: ");
-    Serial.print(digitNames[digit]);
+    Serial.print("Sent two digits: ");
+    Serial.print(digitNames[leftDigit]);
+    Serial.print(digitNames[rightDigit]);
     Serial.print(" with transition: ");
     Serial.print(getTransitionName(packet.angleCmd.transition));
     Serial.print(", duration: ");
     Serial.print(durationToFloat(packet.angleCmd.duration), 1);
-    Serial.println("s");
-    
-    // Update display to show what was sent
-    tft.fillRect(130, 145, 60, 40, COLOR_BG);
-    tft.setTextColor(COLOR_ACCENT, COLOR_BG);
-    tft.setTextSize(3);
-    tft.setCursor(145, 155);
-    tft.print(digitNames[digit]);
-    
+    Serial.println("s (targeting 12 pixels only)");
   } else {
-    Serial.println("Failed to send digit packet!");
-    
-    tft.fillRect(130, 145, 60, 40, TFT_RED);
-    tft.setTextColor(TFT_WHITE, TFT_RED);
-    tft.setTextSize(1);
-    tft.setCursor(140, 160);
-    tft.print("ERROR");
+    Serial.println("Failed to send two-digit packet!");
   }
 }
 
@@ -1222,33 +1225,35 @@ void loop() {
         lastPingTime = currentTime;
       }
       
-      // Handle auto-cycle mode
+      // Handle auto-cycle mode (cycles 00-99 on two-digit display)
       if (autoCycleEnabled) {
         // Calculate total wait time: animation duration + 3 seconds
         unsigned long totalWaitTime = (unsigned long)(currentDigitSpeed * 1000) + 3000;
-        
+
         if (currentTime - lastAutoCycleTime >= totalWaitTime) {
-          // Send current digit
-          sendDigitPattern(autoCycleDigit);
-          
-          // Update digit for next cycle
+          // Send current two-digit number
+          uint8_t leftDigit = autoCycleNumber / 10;   // Tens digit
+          uint8_t rightDigit = autoCycleNumber % 10;  // Ones digit
+          sendTwoDigitPattern(leftDigit, rightDigit);
+
+          // Update number for next cycle (bounces 0->99->0)
           if (autoCycleDirection) {
-            // Going 0->9
-            autoCycleDigit++;
-            if (autoCycleDigit > 9) {
-              autoCycleDigit = 8; // Go to 8 next
+            // Going 0->99
+            autoCycleNumber++;
+            if (autoCycleNumber > 99) {
+              autoCycleNumber = 98;  // Go to 98 next
               autoCycleDirection = false;
             }
           } else {
-            // Going 9->0
-            if (autoCycleDigit == 0) {
-              autoCycleDigit = 1; // Go to 1 next
+            // Going 99->0
+            if (autoCycleNumber == 0) {
+              autoCycleNumber = 1;  // Go to 1 next
               autoCycleDirection = true;
             } else {
-              autoCycleDigit--;
+              autoCycleNumber--;
             }
           }
-          
+
           lastAutoCycleTime = currentTime;
         }
       }
