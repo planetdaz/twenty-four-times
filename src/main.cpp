@@ -429,6 +429,14 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
     case CMD_SET_ANGLES: {
       const AngleCommandPacket& cmd = packet->angleCmd;
 
+      // Check if this pixel is targeted by this command
+      if (!cmd.isPixelTargeted(PIXEL_ID)) {
+        Serial.print("ESP-NOW: Pixel ");
+        Serial.print(PIXEL_ID);
+        Serial.println(" not targeted, ignoring command");
+        break;
+      }
+
       // Exit identify mode when we receive a new command
       identifyMode = false;
 

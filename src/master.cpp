@@ -339,6 +339,7 @@ ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
 void sendRandomPattern() {
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
+  packet.angleCmd.clearTargetMask();  // Target all pixels (broadcast mode)
   packet.angleCmd.transition = getRandomTransition();
   packet.angleCmd.duration = floatToDuration(getRandomDuration());
 
@@ -647,10 +648,11 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
 
 void sendDigitPattern(uint8_t digit) {
   if (digit > 11) return; // Invalid digit
-  
+
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
-  
+  packet.angleCmd.clearTargetMask();  // Target all pixels (broadcast mode)
+
   // Use random transition and set duration from speed control
   packet.angleCmd.transition = getRandomTransition();
   packet.angleCmd.duration = floatToDuration(currentDigitSpeed);
@@ -956,6 +958,9 @@ void sendManualCommand(bool allPixels) {
   packet.angleCmd.duration = floatToDuration(manualState.duration);
 
   if (allPixels) {
+    // Target all pixels (broadcast mode)
+    packet.angleCmd.clearTargetMask();
+
     // Send same angles and directions to all pixels (synchronized movement)
     for (int i = 0; i < MAX_PIXELS; i++) {
       packet.angleCmd.setPixelAngles(i,
@@ -969,25 +974,23 @@ void sendManualCommand(bool allPixels) {
     }
     Serial.println("Sending manual command to ALL pixels");
   } else {
-    // Send to selected pixel only, others get current angles (no change)
-    for (int i = 0; i < MAX_PIXELS; i++) {
-      if (i == manualState.selectedPixel) {
-        packet.angleCmd.setPixelAngles(i,
-          manualState.angles[0],
-          manualState.angles[1],
-          manualState.angles[2],
-          manualState.directions[0],
-          manualState.directions[1],
-          manualState.directions[2]);
-        packet.angleCmd.setPixelStyle(i, manualState.colorIndex, manualState.opacity);
-      } else {
-        // Keep other pixels at their current state (send 0,0,0 with instant transition)
-        packet.angleCmd.setPixelAngles(i, 0, 0, 0, DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
-        packet.angleCmd.setPixelStyle(i, 0, 0);  // Invisible
-      }
-    }
+    // Target only the selected pixel - others will ignore the command
+    packet.angleCmd.clearTargetMask();
+    packet.angleCmd.setTargetPixel(manualState.selectedPixel);
+
+    // Only need to set values for the targeted pixel
+    packet.angleCmd.setPixelAngles(manualState.selectedPixel,
+      manualState.angles[0],
+      manualState.angles[1],
+      manualState.angles[2],
+      manualState.directions[0],
+      manualState.directions[1],
+      manualState.directions[2]);
+    packet.angleCmd.setPixelStyle(manualState.selectedPixel, manualState.colorIndex, manualState.opacity);
+
     Serial.print("Sending manual command to pixel ");
-    Serial.println(manualState.selectedPixel);
+    Serial.print(manualState.selectedPixel);
+    Serial.println(" (others will continue current animation)");
   }
 
   if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {

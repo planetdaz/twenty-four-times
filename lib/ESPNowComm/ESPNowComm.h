@@ -86,7 +86,7 @@ inline float durationToFloat(duration_t duration) {
 }
 
 // Command packet for setting angles
-// Total size: 1 + 1 + 1 + 72 + 72 + 24 + 24 + 24 = 219 bytes (under ESP-NOW's 250 byte limit)
+// Total size: 1 + 1 + 1 + 72 + 72 + 24 + 24 + 3 + 21 = 219 bytes (under ESP-NOW's 250 byte limit)
 struct __attribute__((packed)) AngleCommandPacket {
   CommandType command;              // 1 byte: Command type (CMD_SET_ANGLES)
   TransitionType transition;        // 1 byte: Transition/easing type
@@ -95,7 +95,9 @@ struct __attribute__((packed)) AngleCommandPacket {
   RotationDirection directions[MAX_PIXELS][HANDS_PER_PIXEL]; // 72 bytes: Rotation directions
   uint8_t colorIndices[MAX_PIXELS]; // 24 bytes: Color palette index for each pixel
   uint8_t opacities[MAX_PIXELS];    // 24 bytes: Opacity for each pixel (0-255)
-  uint8_t reserved[24];             // 24 bytes: Reserved for future use
+  uint8_t targetMask[3];            // 3 bytes: Bitmask for which pixels should respond (24 bits)
+                                    //          Bit N = Pixel N (0-23). All zeros = target all pixels
+  uint8_t reserved[21];             // 21 bytes: Reserved for future use
 
   // Helper to set angles for a specific pixel
   void setPixelAngles(uint8_t pixelIndex, float angle1, float angle2, float angle3,
@@ -136,6 +138,76 @@ struct __attribute__((packed)) AngleCommandPacket {
       colorIndices[pixelIndex] = colorIndex;
       opacities[pixelIndex] = opacity;
     }
+  }
+
+  // ===== TARGET MASK HELPERS =====
+  // Target mask allows selective pixel targeting. Each bit represents a pixel (0-23).
+  // When all bits are 0, ALL pixels respond (broadcast mode for backward compatibility).
+  // When any bit is set, only pixels with their bit set will respond.
+
+  // Clear target mask (all zeros = target all pixels)
+  void clearTargetMask() {
+    targetMask[0] = 0;
+    targetMask[1] = 0;
+    targetMask[2] = 0;
+  }
+
+  // Set target mask to target all pixels explicitly (all bits set)
+  void setTargetAll() {
+    targetMask[0] = 0xFF;
+    targetMask[1] = 0xFF;
+    targetMask[2] = 0xFF;
+  }
+
+  // Set a specific pixel as a target
+  void setTargetPixel(uint8_t pixelIndex) {
+    if (pixelIndex < MAX_PIXELS) {
+      uint8_t byteIndex = pixelIndex / 8;
+      uint8_t bitIndex = pixelIndex % 8;
+      targetMask[byteIndex] |= (1 << bitIndex);
+    }
+  }
+
+  // Clear a specific pixel from targets
+  void clearTargetPixel(uint8_t pixelIndex) {
+    if (pixelIndex < MAX_PIXELS) {
+      uint8_t byteIndex = pixelIndex / 8;
+      uint8_t bitIndex = pixelIndex % 8;
+      targetMask[byteIndex] &= ~(1 << bitIndex);
+    }
+  }
+
+  // Check if a specific pixel is targeted
+  // Returns true if: mask is all zeros (broadcast mode) OR pixel's bit is set
+  bool isPixelTargeted(uint8_t pixelIndex) const {
+    // All zeros means broadcast to all pixels
+    if (targetMask[0] == 0 && targetMask[1] == 0 && targetMask[2] == 0) {
+      return true;
+    }
+    // Otherwise check the specific bit
+    if (pixelIndex < MAX_PIXELS) {
+      uint8_t byteIndex = pixelIndex / 8;
+      uint8_t bitIndex = pixelIndex % 8;
+      return (targetMask[byteIndex] & (1 << bitIndex)) != 0;
+    }
+    return false;
+  }
+
+  // Check if mask is in broadcast mode (all zeros)
+  bool isBroadcastMode() const {
+    return targetMask[0] == 0 && targetMask[1] == 0 && targetMask[2] == 0;
+  }
+
+  // Get count of targeted pixels
+  uint8_t getTargetCount() const {
+    if (isBroadcastMode()) return MAX_PIXELS;
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < MAX_PIXELS; i++) {
+      uint8_t byteIndex = i / 8;
+      uint8_t bitIndex = i % 8;
+      if (targetMask[byteIndex] & (1 << bitIndex)) count++;
+    }
+    return count;
   }
 };
 
