@@ -68,11 +68,28 @@ enum ControlMode {
   MODE_MENU,        // Main menu - select mode
   MODE_SIMULATION,  // Random patterns like the simulation
   MODE_DIGITS,      // Display digits 0-9 with animations
-  MODE_IDENTIFY,    // Identify all pixels
+  MODE_PROVISION,   // Discovery and provisioning of pixels
   MODE_MANUAL       // Manual control (future)
 };
 
 ControlMode currentMode = MODE_MENU;
+
+// ===== PROVISIONING STATE =====
+enum ProvisionPhase {
+  PHASE_IDLE,        // Initial state - show start button
+  PHASE_DISCOVERING, // Broadcasting discovery, collecting MACs
+  PHASE_ASSIGNING    // Cycling through MACs, assigning IDs
+};
+
+ProvisionPhase provisionPhase = PHASE_IDLE;
+uint8_t discoveredMacs[MAX_PIXELS][6];  // Collected MAC addresses
+uint8_t discoveredIds[MAX_PIXELS];      // Current IDs of discovered pixels
+uint8_t discoveredCount = 0;            // Number of MACs discovered
+uint8_t selectedMacIndex = 0;           // Currently selected MAC for assignment
+uint8_t nextIdToAssign = 0;             // Next ID to assign
+unsigned long lastDiscoveryTime = 0;    // For discovery timing
+const unsigned long DISCOVERY_INTERVAL = 3000;  // Send discovery every 3 seconds
+const unsigned long DISCOVERY_WINDOW = 5000;    // Wait 5 seconds for responses
 
 // Timing
 unsigned long lastCommandTime = 0;
@@ -164,9 +181,13 @@ DigitPattern digitPatterns[12] = {
    {50, 50, 50, 50, 50, 50}}
 };
 
-// Pixel ID mapping for the 6-pixel digit display
-// Physical wiring: IDs 0,1 (top), 8,9 (middle), 16,17 (bottom)
-const uint8_t digitPixelIds[6] = {0, 1, 8, 9, 16, 17};
+// Pixel ID mappings for two-digit display (12 pixels in 3 rows × 4 columns)
+// Layout:
+//   Row 0: [0]  [1]  | [2]  [3]   <- Left digit top, Right digit top
+//   Row 1: [8]  [9]  | [10] [11]  <- Left digit mid, Right digit mid
+//   Row 2: [16] [17] | [18] [19]  <- Left digit bot, Right digit bot
+const uint8_t digit1PixelIds[6] = {0, 1, 8, 9, 16, 17};    // Left digit
+const uint8_t digit2PixelIds[6] = {2, 3, 10, 11, 18, 19};  // Right digit
 
 // Current color for digits mode
 uint8_t currentDigitColor = 0;
@@ -174,10 +195,10 @@ uint8_t currentDigitColor = 0;
 // Current speed for digits mode (duration in seconds)
 float currentDigitSpeed = 2.0;
 
-// Auto-cycle mode variables
+// Auto-cycle mode variables (cycles 00-99 for two-digit display)
 bool autoCycleEnabled = false;
-uint8_t autoCycleDigit = 0;
-bool autoCycleDirection = true; // true = 0->9, false = 9->0
+uint8_t autoCycleNumber = 0;        // Current number (0-99)
+bool autoCycleDirection = true;     // true = 0->99, false = 99->0
 unsigned long lastAutoCycleTime = 0;
 
 // ===== FUNCTION DECLARATIONS =====
@@ -187,7 +208,14 @@ void sendManualCommand(bool allPixels);
 void sendPing();
 void drawDigitsScreen();
 void handleDigitsTouch(uint16_t x, uint16_t y);
-void sendDigitPattern(uint8_t digit);
+void sendTwoDigitPattern(uint8_t leftDigit, uint8_t rightDigit);
+// Provisioning functions
+void onMasterPacketReceived(const ESPNowPacket* packet, size_t len);
+void drawProvisionScreen();
+void handleProvisionTouch(uint16_t x, uint16_t y);
+void sendDiscoveryCommand();
+void sendHighlightCommand(uint8_t* targetMac, HighlightState state);
+void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId);
 
 // ===== FUNCTIONS =====
 
@@ -292,15 +320,15 @@ void drawMenu() {
   tft.setCursor(180, 125);
   tft.println("Display 0-9");
 
-  // Button 3: Identify (bottom left)
+  // Button 3: Provision (bottom left)
   tft.fillRoundRect(10, 160, 150, 60, 8, TFT_PURPLE);
   tft.setTextColor(TFT_WHITE, TFT_PURPLE);
   tft.setTextSize(2);
-  tft.setCursor(35, 175);
-  tft.println("Identify");
+  tft.setCursor(30, 175);
+  tft.println("Provision");
   tft.setTextSize(1);
-  tft.setCursor(30, 195);
-  tft.println("Show pixel IDs");
+  tft.setCursor(25, 195);
+  tft.println("Discover & assign");
 
   // Button 4: Manual (bottom right)
   tft.fillRoundRect(170, 160, 140, 60, 8, TFT_ORANGE);
@@ -323,9 +351,9 @@ ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
   if (x >= 170 && x <= 310 && y >= 90 && y <= 150) {
     return MODE_DIGITS;
   }
-  // Button 3: Identify (10, 160, 150, 60)
+  // Button 3: Provision (10, 160, 150, 60)
   if (x >= 10 && x <= 160 && y >= 160 && y <= 220) {
-    return MODE_IDENTIFY;
+    return MODE_PROVISION;
   }
   // Button 4: Manual (170, 160, 140, 60)
   if (x >= 170 && x <= 310 && y >= 160 && y <= 220) {
@@ -339,6 +367,7 @@ ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
 void sendRandomPattern() {
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
+  packet.angleCmd.clearTargetMask();  // Target all pixels (broadcast mode)
   packet.angleCmd.transition = getRandomTransition();
   packet.angleCmd.duration = floatToDuration(getRandomDuration());
 
@@ -401,37 +430,348 @@ void sendRandomPattern() {
   }
 }
 
-void sendIdentifyCommand(uint8_t pixelId) {
+// ===== PROVISIONING FUNCTIONS =====
+
+// Receive callback for discovery responses from pixels
+void onMasterPacketReceived(const ESPNowPacket* packet, size_t len) {
+  if (packet->command == CMD_DISCOVERY && provisionPhase == PHASE_DISCOVERING) {
+    const DiscoveryResponsePacket& resp = packet->discoveryResponse;
+
+    // Check if this MAC is already in our list
+    bool duplicate = false;
+    for (uint8_t i = 0; i < discoveredCount; i++) {
+      if (memcmp(discoveredMacs[i], resp.mac, 6) == 0) {
+        duplicate = true;
+        break;
+      }
+    }
+
+    if (!duplicate && discoveredCount < MAX_PIXELS) {
+      // Add to discovered list
+      memcpy(discoveredMacs[discoveredCount], resp.mac, 6);
+      discoveredIds[discoveredCount] = resp.currentId;
+      discoveredCount++;
+
+      Serial.print("Discovered pixel: ");
+      for (int i = 0; i < 6; i++) {
+        if (i > 0) Serial.print(":");
+        Serial.printf("%02X", resp.mac[i]);
+      }
+      Serial.print(" (ID: ");
+      if (resp.currentId == PIXEL_ID_UNPROVISIONED) {
+        Serial.print("unprovisioned");
+      } else {
+        Serial.print(resp.currentId);
+      }
+      Serial.println(")");
+    }
+  }
+}
+
+// Format MAC address for display
+void formatMac(uint8_t* mac, char* buffer) {
+  sprintf(buffer, "%02X:%02X:%02X:%02X:%02X:%02X",
+          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+// Send discovery command
+void sendDiscoveryCommand() {
   ESPNowPacket packet;
-  packet.identify.command = CMD_IDENTIFY;
-  packet.identify.pixelId = pixelId;
+  packet.discovery.command = CMD_DISCOVERY;
+  packet.discovery.excludeCount = min(discoveredCount, (uint8_t)20);
 
-  if (ESPNowComm::sendPacket(&packet, sizeof(IdentifyPacket))) {
-    Serial.print("Sent IDENTIFY command for pixel ");
-    if (pixelId == 255) {
-      Serial.println("ALL");
-    } else {
-      Serial.println(pixelId);
-    }
+  // Copy already discovered MACs to exclude list
+  for (uint8_t i = 0; i < packet.discovery.excludeCount; i++) {
+    memcpy(packet.discovery.excludeMacs[i], discoveredMacs[i], 6);
+  }
 
-    // Update display
-    tft.fillScreen(TFT_BLUE);
-    tft.setTextColor(TFT_WHITE, TFT_BLUE);
-    tft.setTextSize(3);
-    tft.setCursor(40, 80);
-    tft.println("IDENTIFY MODE");
+  if (ESPNowComm::sendPacket(&packet, sizeof(DiscoveryCommandPacket))) {
+    Serial.print("Sent DISCOVERY command (excluding ");
+    Serial.print(packet.discovery.excludeCount);
+    Serial.println(" MACs)");
+  }
+}
 
+// Send highlight command to a specific pixel
+void sendHighlightCommand(uint8_t* targetMac, HighlightState state) {
+  ESPNowPacket packet;
+  packet.highlight.command = CMD_HIGHLIGHT;
+  memcpy(packet.highlight.targetMac, targetMac, 6);
+  packet.highlight.state = state;
+
+  ESPNowComm::sendPacket(&packet, sizeof(HighlightPacket));
+}
+
+// Send pixel ID assignment command
+void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId) {
+  ESPNowPacket packet;
+  packet.setPixelId.command = CMD_SET_PIXEL_ID;
+  memcpy(packet.setPixelId.targetMac, targetMac, 6);
+  packet.setPixelId.pixelId = newId;
+
+  if (ESPNowComm::sendPacket(&packet, sizeof(SetPixelIdPacket))) {
+    Serial.print("Assigned ID ");
+    Serial.print(newId);
+    Serial.println(" to pixel");
+  }
+}
+
+// Draw the provisioning screen based on current phase
+void drawProvisionScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title
+  tft.setTextColor(COLOR_ACCENT, COLOR_BG);
+  tft.setTextSize(2);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("Provision Pixels", 160, 5);
+  tft.setTextDatum(TL_DATUM);
+
+  if (provisionPhase == PHASE_IDLE) {
+    // Show start button and info
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setTextSize(1);
+    tft.setCursor(10, 40);
+    tft.println("Discover and assign IDs to pixels.");
+    tft.setCursor(10, 55);
+    tft.println("Pixels will flash during discovery.");
+
+    // Start Discovery button
+    tft.fillRoundRect(60, 90, 200, 50, 8, TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
     tft.setTextSize(2);
-    tft.setCursor(60, 120);
-    if (pixelId == 255) {
-      tft.println("All Pixels");
-    } else {
-      tft.print("Pixel ID: ");
-      tft.println(pixelId);
+    tft.setCursor(75, 105);
+    tft.println("Start Discovery");
+
+    // Back button
+    tft.fillRoundRect(110, 170, 100, 40, 8, TFT_DARKGREY);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setTextSize(2);
+    tft.setCursor(135, 180);
+    tft.println("Back");
+
+  } else if (provisionPhase == PHASE_DISCOVERING) {
+    // Show discovery progress
+    tft.setTextColor(TFT_YELLOW, COLOR_BG);
+    tft.setTextSize(2);
+    tft.setCursor(60, 50);
+    tft.println("Discovering...");
+
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setTextSize(3);
+    tft.setCursor(100, 90);
+    tft.print("Found: ");
+    tft.print(discoveredCount);
+    tft.println("/24");
+
+    // Stop button
+    tft.fillRoundRect(20, 160, 130, 50, 8, TFT_RED);
+    tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.setTextSize(2);
+    tft.setCursor(55, 175);
+    tft.println("Stop");
+
+    // Begin Assignment button (only if we have discovered some)
+    if (discoveredCount > 0) {
+      tft.fillRoundRect(170, 160, 130, 50, 8, TFT_DARKGREEN);
+      tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+      tft.setTextSize(2);
+      tft.setCursor(190, 175);
+      tft.println("Assign");
     }
 
-  } else {
-    Serial.println("Failed to send IDENTIFY command!");
+  } else if (provisionPhase == PHASE_ASSIGNING) {
+    // Show assignment UI
+    char macStr[18];
+    formatMac(discoveredMacs[selectedMacIndex], macStr);
+
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setTextSize(1);
+    tft.setCursor(10, 35);
+    tft.print("Pixel ");
+    tft.print(selectedMacIndex + 1);
+    tft.print(" of ");
+    tft.println(discoveredCount);
+
+    // Show MAC address
+    tft.setTextSize(1);
+    tft.setCursor(10, 55);
+    tft.print("MAC: ");
+    tft.println(macStr);
+
+    // Show current ID
+    tft.setCursor(10, 70);
+    tft.print("Current ID: ");
+    if (discoveredIds[selectedMacIndex] == PIXEL_ID_UNPROVISIONED) {
+      tft.setTextColor(TFT_YELLOW, COLOR_BG);
+      tft.println("None");
+    } else {
+      tft.println(discoveredIds[selectedMacIndex]);
+    }
+
+    // Show next ID to assign
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
+    tft.setTextSize(2);
+    tft.setCursor(10, 95);
+    tft.print("Assign ID: ");
+    tft.setTextSize(3);
+    tft.println(nextIdToAssign);
+
+    // Prev/Next buttons
+    tft.fillRoundRect(10, 140, 60, 35, 4, TFT_DARKBLUE);
+    tft.setTextColor(TFT_WHITE, TFT_DARKBLUE);
+    tft.setTextSize(2);
+    tft.setCursor(20, 148);
+    tft.println("Prev");
+
+    tft.fillRoundRect(80, 140, 60, 35, 4, TFT_DARKBLUE);
+    tft.setCursor(90, 148);
+    tft.println("Next");
+
+    // Assign button
+    tft.fillRoundRect(160, 140, 70, 35, 4, TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+    tft.setCursor(165, 148);
+    tft.println("Assign");
+
+    // Skip button
+    tft.fillRoundRect(240, 140, 70, 35, 4, TFT_ORANGE);
+    tft.setTextColor(TFT_WHITE, TFT_ORANGE);
+    tft.setCursor(255, 148);
+    tft.println("Skip");
+
+    // Back button
+    tft.fillRoundRect(10, 190, 80, 35, 4, TFT_DARKGREY);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setCursor(25, 198);
+    tft.println("Back");
+
+    // Done button
+    tft.fillRoundRect(230, 190, 80, 35, 4, TFT_PURPLE);
+    tft.setTextColor(TFT_WHITE, TFT_PURPLE);
+    tft.setCursor(245, 198);
+    tft.println("Done");
+  }
+}
+
+// Handle touch in provisioning mode
+void handleProvisionTouch(uint16_t x, uint16_t y) {
+  if (provisionPhase == PHASE_IDLE) {
+    // Start Discovery button (60, 90, 200, 50)
+    if (x >= 60 && x <= 260 && y >= 90 && y <= 140) {
+      discoveredCount = 0;
+      selectedMacIndex = 0;
+      provisionPhase = PHASE_DISCOVERING;
+      lastDiscoveryTime = millis();
+      sendDiscoveryCommand();
+      drawProvisionScreen();
+      return;
+    }
+
+    // Back button (110, 170, 100, 40)
+    if (x >= 110 && x <= 210 && y >= 170 && y <= 210) {
+      currentMode = MODE_MENU;
+      drawMenu();
+      return;
+    }
+
+  } else if (provisionPhase == PHASE_DISCOVERING) {
+    // Stop button (20, 160, 130, 50)
+    if (x >= 20 && x <= 150 && y >= 160 && y <= 210) {
+      provisionPhase = PHASE_IDLE;
+      drawProvisionScreen();
+      return;
+    }
+
+    // Assign button (170, 160, 130, 50)
+    if (x >= 170 && x <= 300 && y >= 160 && y <= 210 && discoveredCount > 0) {
+      provisionPhase = PHASE_ASSIGNING;
+      selectedMacIndex = 0;
+      nextIdToAssign = 0;
+      // Highlight the first pixel
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
+      drawProvisionScreen();
+      return;
+    }
+
+  } else if (provisionPhase == PHASE_ASSIGNING) {
+    // Prev button (10, 140, 60, 35)
+    if (x >= 10 && x <= 70 && y >= 140 && y <= 175) {
+      // Un-highlight current
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      // Move to previous
+      if (selectedMacIndex > 0) {
+        selectedMacIndex--;
+      } else {
+        selectedMacIndex = discoveredCount - 1;
+      }
+      // Highlight new selection
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
+      drawProvisionScreen();
+      return;
+    }
+
+    // Next button (80, 140, 60, 35)
+    if (x >= 80 && x <= 140 && y >= 140 && y <= 175) {
+      // Un-highlight current
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      // Move to next
+      selectedMacIndex = (selectedMacIndex + 1) % discoveredCount;
+      // Highlight new selection
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
+      drawProvisionScreen();
+      return;
+    }
+
+    // Assign button (160, 140, 70, 35)
+    if (x >= 160 && x <= 230 && y >= 140 && y <= 175) {
+      // Assign the ID
+      sendAssignIdCommand(discoveredMacs[selectedMacIndex], nextIdToAssign);
+      // Update local state
+      discoveredIds[selectedMacIndex] = nextIdToAssign;
+      // Show assigned state
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_ASSIGNED);
+      delay(500);  // Brief pause to see confirmation
+      // Move to next and increment ID
+      nextIdToAssign++;
+      if (selectedMacIndex < discoveredCount - 1) {
+        selectedMacIndex++;
+        sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
+      }
+      drawProvisionScreen();
+      return;
+    }
+
+    // Skip button (240, 140, 70, 35)
+    if (x >= 240 && x <= 310 && y >= 140 && y <= 175) {
+      // Un-highlight current
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      // Move to next without assigning
+      selectedMacIndex = (selectedMacIndex + 1) % discoveredCount;
+      // Highlight new selection
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
+      drawProvisionScreen();
+      return;
+    }
+
+    // Back button (10, 190, 80, 35)
+    if (x >= 10 && x <= 90 && y >= 190 && y <= 225) {
+      // Un-highlight current
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      provisionPhase = PHASE_DISCOVERING;
+      drawProvisionScreen();
+      return;
+    }
+
+    // Done button (230, 190, 80, 35)
+    if (x >= 230 && x <= 310 && y >= 190 && y <= 225) {
+      // Un-highlight current
+      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      provisionPhase = PHASE_IDLE;
+      currentMode = MODE_MENU;
+      drawMenu();
+      return;
+    }
   }
 }
 
@@ -562,38 +902,38 @@ void drawDigitsScreen() {
 }
 
 void handleDigitsTouch(uint16_t x, uint16_t y) {
-  // Check digit buttons (0-4, top row)
+  // Check digit buttons (0-4, top row) - shows as "X " (digit left, space right)
   if (y >= 45 && y <= 85) {
     for (int i = 0; i <= 4; i++) {
       int buttonX = 10 + i * 60;
       if (x >= buttonX && x <= buttonX + 50) {
-        sendDigitPattern(i);
+        sendTwoDigitPattern(i, 11);  // digit on left, space on right
         return;
       }
     }
   }
-  
-  // Check digit buttons (5-9, bottom row)
+
+  // Check digit buttons (5-9, bottom row) - shows as "X " (digit left, space right)
   if (y >= 95 && y <= 135) {
     for (int i = 5; i <= 9; i++) {
       int buttonX = 10 + (i - 5) * 60;
       if (x >= buttonX && x <= buttonX + 50) {
-        sendDigitPattern(i);
+        sendTwoDigitPattern(i, 11);  // digit on left, space on right
         return;
       }
     }
   }
-  
+
   // Check special character buttons
   if (y >= 145 && y <= 185) {
-    // Colon button
+    // Colon button - shows ": " (colon left, space right)
     if (x >= 10 && x <= 60) {
-      sendDigitPattern(10); // ':' is index 10
+      sendTwoDigitPattern(10, 11);  // colon on left, space on right
       return;
     }
-    // Space button
+    // Space button - shows "  " (space both)
     if (x >= 70 && x <= 120) {
-      sendDigitPattern(11); // ' ' is index 11
+      sendTwoDigitPattern(11, 11);  // space on both
       return;
     }
     // Auto-cycle toggle button
@@ -601,7 +941,7 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
       autoCycleEnabled = !autoCycleEnabled;
       if (autoCycleEnabled) {
         // Reset auto-cycle state when enabling
-        autoCycleDigit = 0;
+        autoCycleNumber = 0;
         autoCycleDirection = true;
         lastAutoCycleTime = millis();
       }
@@ -645,74 +985,74 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
   }
 }
 
-void sendDigitPattern(uint8_t digit) {
-  if (digit > 11) return; // Invalid digit
-  
+// Send two digits pattern to 12 pixels (3 rows × 4 columns)
+// Only the 12 targeted pixels will respond; others continue their current animation
+void sendTwoDigitPattern(uint8_t leftDigit, uint8_t rightDigit) {
+  if (leftDigit > 11 || rightDigit > 11) return; // Invalid digit
+
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
-  
+
+  // Target only the 12 pixels used for the two-digit display
+  packet.angleCmd.clearTargetMask();
+  for (int i = 0; i < 6; i++) {
+    packet.angleCmd.setTargetPixel(digit1PixelIds[i]);
+    packet.angleCmd.setTargetPixel(digit2PixelIds[i]);
+  }
+
   // Use random transition and set duration from speed control
   packet.angleCmd.transition = getRandomTransition();
   packet.angleCmd.duration = floatToDuration(currentDigitSpeed);
-  
-  // Clear all pixels first (set to 225° with low opacity)
-  for (int i = 0; i < MAX_PIXELS; i++) {
-    // Random directions for each hand
-    RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    
-    packet.angleCmd.setPixelAngles(i, 225, 225, 225, dir1, dir2, dir3);
-    packet.angleCmd.setPixelStyle(i, currentDigitColor, 50);
-  }
-  
-  // Set the 6 pixels that make up the digit
-  DigitPattern& pattern = digitPatterns[digit];
+
+  // Set left digit (digit 1) pattern
+  DigitPattern& leftPattern = digitPatterns[leftDigit];
   for (int i = 0; i < 6; i++) {
-    uint8_t pixelId = digitPixelIds[i];
-    
+    uint8_t pixelId = digit1PixelIds[i];
+
     // Random directions for each hand
     RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
     RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
     RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    
+
     packet.angleCmd.setPixelAngles(pixelId,
-      pattern.angles[i][0],
-      pattern.angles[i][1],  
-      pattern.angles[i][2],
-      dir1,
-      dir2,
-      dir3
-    );
-    packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, pattern.opacity[i]);
+      leftPattern.angles[i][0],
+      leftPattern.angles[i][1],
+      leftPattern.angles[i][2],
+      dir1, dir2, dir3);
+    packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, leftPattern.opacity[i]);
   }
-  
+
+  // Set right digit (digit 2) pattern
+  DigitPattern& rightPattern = digitPatterns[rightDigit];
+  for (int i = 0; i < 6; i++) {
+    uint8_t pixelId = digit2PixelIds[i];
+
+    // Random directions for each hand
+    RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+
+    packet.angleCmd.setPixelAngles(pixelId,
+      rightPattern.angles[i][0],
+      rightPattern.angles[i][1],
+      rightPattern.angles[i][2],
+      dir1, dir2, dir3);
+    packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, rightPattern.opacity[i]);
+  }
+
   // Send the packet
   if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {
     const char* digitNames[] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", " "};
-    Serial.print("Sent digit: ");
-    Serial.print(digitNames[digit]);
+    Serial.print("Sent two digits: ");
+    Serial.print(digitNames[leftDigit]);
+    Serial.print(digitNames[rightDigit]);
     Serial.print(" with transition: ");
     Serial.print(getTransitionName(packet.angleCmd.transition));
     Serial.print(", duration: ");
     Serial.print(durationToFloat(packet.angleCmd.duration), 1);
-    Serial.println("s");
-    
-    // Update display to show what was sent
-    tft.fillRect(130, 145, 60, 40, COLOR_BG);
-    tft.setTextColor(COLOR_ACCENT, COLOR_BG);
-    tft.setTextSize(3);
-    tft.setCursor(145, 155);
-    tft.print(digitNames[digit]);
-    
+    Serial.println("s (targeting 12 pixels only)");
   } else {
-    Serial.println("Failed to send digit packet!");
-    
-    tft.fillRect(130, 145, 60, 40, TFT_RED);
-    tft.setTextColor(TFT_WHITE, TFT_RED);
-    tft.setTextSize(1);
-    tft.setCursor(140, 160);
-    tft.print("ERROR");
+    Serial.println("Failed to send two-digit packet!");
   }
 }
 
@@ -956,6 +1296,9 @@ void sendManualCommand(bool allPixels) {
   packet.angleCmd.duration = floatToDuration(manualState.duration);
 
   if (allPixels) {
+    // Target all pixels (broadcast mode)
+    packet.angleCmd.clearTargetMask();
+
     // Send same angles and directions to all pixels (synchronized movement)
     for (int i = 0; i < MAX_PIXELS; i++) {
       packet.angleCmd.setPixelAngles(i,
@@ -969,25 +1312,23 @@ void sendManualCommand(bool allPixels) {
     }
     Serial.println("Sending manual command to ALL pixels");
   } else {
-    // Send to selected pixel only, others get current angles (no change)
-    for (int i = 0; i < MAX_PIXELS; i++) {
-      if (i == manualState.selectedPixel) {
-        packet.angleCmd.setPixelAngles(i,
-          manualState.angles[0],
-          manualState.angles[1],
-          manualState.angles[2],
-          manualState.directions[0],
-          manualState.directions[1],
-          manualState.directions[2]);
-        packet.angleCmd.setPixelStyle(i, manualState.colorIndex, manualState.opacity);
-      } else {
-        // Keep other pixels at their current state (send 0,0,0 with instant transition)
-        packet.angleCmd.setPixelAngles(i, 0, 0, 0, DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST);
-        packet.angleCmd.setPixelStyle(i, 0, 0);  // Invisible
-      }
-    }
+    // Target only the selected pixel - others will ignore the command
+    packet.angleCmd.clearTargetMask();
+    packet.angleCmd.setTargetPixel(manualState.selectedPixel);
+
+    // Only need to set values for the targeted pixel
+    packet.angleCmd.setPixelAngles(manualState.selectedPixel,
+      manualState.angles[0],
+      manualState.angles[1],
+      manualState.angles[2],
+      manualState.directions[0],
+      manualState.directions[1],
+      manualState.directions[2]);
+    packet.angleCmd.setPixelStyle(manualState.selectedPixel, manualState.colorIndex, manualState.opacity);
+
     Serial.print("Sending manual command to pixel ");
-    Serial.println(manualState.selectedPixel);
+    Serial.print(manualState.selectedPixel);
+    Serial.println(" (others will continue current animation)");
   }
 
   if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {
@@ -1113,8 +1454,10 @@ void setup() {
 
   delay(1000);
 
-  // Initialize ESP-NOW in sender mode
+  // Initialize ESP-NOW in sender mode (also enables receiving for discovery responses)
   if (ESPNowComm::initSender(ESPNOW_CHANNEL)) {
+    // Register receive callback for discovery responses
+    ESPNowComm::setReceiveCallback(onMasterPacketReceived);
 
     tft.fillScreen(COLOR_BG);
     tft.setTextColor(COLOR_ACCENT, COLOR_BG);
@@ -1172,8 +1515,9 @@ void loop() {
             drawDigitsScreen();
             lastPingTime = currentTime;  // Initialize ping timer
             break;
-          case MODE_IDENTIFY:
-            sendIdentifyCommand(255);
+          case MODE_PROVISION:
+            provisionPhase = PHASE_IDLE;
+            drawProvisionScreen();
             break;
           case MODE_MANUAL:
             drawManualScreen();
@@ -1189,6 +1533,9 @@ void loop() {
     } else if (currentMode == MODE_DIGITS) {
       // Digits mode has its own touch handler
       handleDigitsTouch(tx, ty);
+    } else if (currentMode == MODE_PROVISION) {
+      // Provision mode has its own touch handler
+      handleProvisionTouch(tx, ty);
     } else {
       // Any touch in other modes returns to menu
       currentMode = MODE_MENU;
@@ -1219,42 +1566,52 @@ void loop() {
         lastPingTime = currentTime;
       }
       
-      // Handle auto-cycle mode
+      // Handle auto-cycle mode (cycles 00-99 on two-digit display)
       if (autoCycleEnabled) {
         // Calculate total wait time: animation duration + 3 seconds
         unsigned long totalWaitTime = (unsigned long)(currentDigitSpeed * 1000) + 3000;
-        
+
         if (currentTime - lastAutoCycleTime >= totalWaitTime) {
-          // Send current digit
-          sendDigitPattern(autoCycleDigit);
-          
-          // Update digit for next cycle
+          // Send current two-digit number
+          uint8_t leftDigit = autoCycleNumber / 10;   // Tens digit
+          uint8_t rightDigit = autoCycleNumber % 10;  // Ones digit
+          sendTwoDigitPattern(leftDigit, rightDigit);
+
+          // Update number for next cycle (bounces 0->99->0)
           if (autoCycleDirection) {
-            // Going 0->9
-            autoCycleDigit++;
-            if (autoCycleDigit > 9) {
-              autoCycleDigit = 8; // Go to 8 next
+            // Going 0->99
+            autoCycleNumber++;
+            if (autoCycleNumber > 99) {
+              autoCycleNumber = 98;  // Go to 98 next
               autoCycleDirection = false;
             }
           } else {
-            // Going 9->0
-            if (autoCycleDigit == 0) {
-              autoCycleDigit = 1; // Go to 1 next
+            // Going 99->0
+            if (autoCycleNumber == 0) {
+              autoCycleNumber = 1;  // Go to 1 next
               autoCycleDirection = true;
             } else {
-              autoCycleDigit--;
+              autoCycleNumber--;
             }
           }
-          
+
           lastAutoCycleTime = currentTime;
         }
       }
       break;
     }
 
-    case MODE_IDENTIFY: {
-      // Identify mode runs once, then waits for touch to return to menu
-      // Display stays on identify screen until touched
+    case MODE_PROVISION: {
+      // Handle periodic discovery during PHASE_DISCOVERING
+      if (provisionPhase == PHASE_DISCOVERING) {
+        // Send discovery command periodically and update display
+        if (currentTime - lastDiscoveryTime >= DISCOVERY_INTERVAL) {
+          sendDiscoveryCommand();
+          lastDiscoveryTime = currentTime;
+          // Redraw to update count
+          drawProvisionScreen();
+        }
+      }
       break;
     }
 
