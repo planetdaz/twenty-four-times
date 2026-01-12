@@ -4,6 +4,9 @@
 #include <Adafruit_GC9A01A.h>
 #include <ESPNowComm.h>
 #include <Preferences.h>
+#include <HTTPUpdate.h>
+#include <WiFiClient.h>
+#include <esp_now.h>
 
 // Proof of concept: Three rotating clock hands on a 240x240 circular display
 // Based on the twenty-four-times simulation
@@ -135,6 +138,15 @@ bool espnowEnabled = false;  // Set to true when ESP-NOW is initialized
 bool errorState = false;     // If true, display error screen (red bg with "!")
 unsigned long lastPacketTime = 0;
 const unsigned long PACKET_TIMEOUT = 10000;  // 10 seconds without packet = show error
+
+// ===== OTA UPDATE STATE =====
+bool otaInProgress = false;        // True when performing OTA update
+OTAStatus currentOTAStatus = OTA_STATUS_IDLE;
+uint8_t currentOTAProgress = 0;    // 0-100
+
+// Forward declarations for OTA
+void sendOTAAck(OTAStatus status, uint8_t progress, uint16_t errorCode = 0);
+void performOTAUpdate(const OTANotifyPacket& notify);
 
 // FPS tracking
 unsigned long fpsLastTime = 0;
@@ -728,10 +740,179 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       break;
     }
 
+    case CMD_OTA_NOTIFY: {
+      const OTANotifyPacket& notify = packet->otaNotify;
+      Serial.println("ESP-NOW: OTA notify received!");
+      Serial.print("  SSID: ");
+      Serial.println(notify.ssid);
+      Serial.print("  URL: ");
+      Serial.println(notify.firmwareUrl);
+      Serial.print("  Size: ");
+      Serial.println(notify.firmwareSize);
+
+      // Start OTA update process
+      performOTAUpdate(notify);
+      break;
+    }
+
     default:
       Serial.print("ESP-NOW: Unknown command: ");
       Serial.println(packet->command);
   }
+}
+
+// ===== OTA UPDATE FUNCTIONS =====
+
+// Send OTA status acknowledgment back to master
+void sendOTAAck(OTAStatus status, uint8_t progress, uint16_t errorCode) {
+  ESPNowPacket packet;
+  packet.otaAck.command = CMD_OTA_ACK;
+  packet.otaAck.pixelId = pixelId;
+  packet.otaAck.status = status;
+  packet.otaAck.progress = progress;
+  packet.otaAck.errorCode = errorCode;
+
+  ESPNowComm::sendPacket(&packet, sizeof(OTAAckPacket));
+}
+
+// Display OTA progress on screen
+void displayOTAProgress(const char* status, int progress) {
+  canvas->fillScreen(GC9A01A_BLUE);
+  canvas->setTextColor(GC9A01A_WHITE);
+
+  // Status text
+  canvas->setTextSize(2);
+  canvas->setCursor(30, 80);
+  canvas->print(status);
+
+  // Progress bar background
+  canvas->fillRect(30, 120, 180, 20, GC9A01A_BLACK);
+
+  // Progress bar fill
+  if (progress > 0) {
+    int fillWidth = (180 * progress) / 100;
+    canvas->fillRect(30, 120, fillWidth, 20, GC9A01A_GREEN);
+  }
+
+  // Progress text
+  canvas->setTextSize(2);
+  canvas->setCursor(90, 150);
+  canvas->print(progress);
+  canvas->print("%");
+
+  tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+}
+
+// Perform OTA update - connects to WiFi and downloads firmware
+void performOTAUpdate(const OTANotifyPacket& notify) {
+  otaInProgress = true;
+  currentOTAStatus = OTA_STATUS_STARTING;
+  sendOTAAck(OTA_STATUS_STARTING, 0);
+
+  displayOTAProgress("Connecting", 0);
+
+  Serial.println("OTA: Connecting to WiFi...");
+
+  // Disconnect ESP-NOW temporarily - WiFi mode change required
+  esp_now_deinit();
+
+  // Connect to master's WiFi AP
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(notify.ssid, notify.password);
+
+  // Wait for connection (timeout after 30 seconds)
+  int timeout = 60;  // 30 seconds (500ms per iteration)
+  while (WiFi.status() != WL_CONNECTED && timeout > 0) {
+    delay(500);
+    Serial.print(".");
+    timeout--;
+    displayOTAProgress("Connecting", (60 - timeout) * 100 / 60);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\nOTA: WiFi connection failed!");
+    displayOTAProgress("WiFi Failed", 0);
+    currentOTAStatus = OTA_STATUS_ERROR;
+
+    // Restore ESP-NOW
+    delay(2000);
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_STA);
+    ESPNowComm::initReceiver(ESPNOW_CHANNEL);
+    ESPNowComm::setReceiveCallback(onPacketReceived);
+    otaInProgress = false;
+    return;
+  }
+
+  Serial.println("\nOTA: WiFi connected!");
+  Serial.print("OTA: IP address: ");
+  Serial.println(WiFi.localIP());
+
+  currentOTAStatus = OTA_STATUS_DOWNLOADING;
+  sendOTAAck(OTA_STATUS_DOWNLOADING, 0);
+  displayOTAProgress("Downloading", 0);
+
+  // Set up progress callback
+  httpUpdate.onProgress([](int cur, int total) {
+    int progress = (cur * 100) / total;
+    currentOTAProgress = progress;
+    displayOTAProgress("Updating", progress);
+    Serial.printf("OTA Progress: %d%%\n", progress);
+  });
+
+  // Perform the update
+  WiFiClient client;
+  Serial.print("OTA: Downloading from ");
+  Serial.println(notify.firmwareUrl);
+
+  t_httpUpdate_return ret = httpUpdate.update(client, notify.firmwareUrl);
+
+  switch (ret) {
+    case HTTP_UPDATE_FAILED:
+      Serial.printf("OTA: Update failed! Error (%d): %s\n",
+                    httpUpdate.getLastError(),
+                    httpUpdate.getLastErrorString().c_str());
+      displayOTAProgress("FAILED!", 0);
+      canvas->setTextSize(1);
+      canvas->setCursor(20, 180);
+      canvas->print(httpUpdate.getLastErrorString().c_str());
+      tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+      currentOTAStatus = OTA_STATUS_ERROR;
+      sendOTAAck(OTA_STATUS_ERROR, 0, httpUpdate.getLastError());
+
+      // Restore ESP-NOW
+      delay(3000);
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_STA);
+      ESPNowComm::initReceiver(ESPNOW_CHANNEL);
+      ESPNowComm::setReceiveCallback(onPacketReceived);
+      break;
+
+    case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("OTA: No updates available");
+      displayOTAProgress("No Update", 0);
+
+      // Restore ESP-NOW
+      delay(2000);
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_STA);
+      ESPNowComm::initReceiver(ESPNOW_CHANNEL);
+      ESPNowComm::setReceiveCallback(onPacketReceived);
+      break;
+
+    case HTTP_UPDATE_OK:
+      Serial.println("OTA: Update successful! Rebooting...");
+      displayOTAProgress("SUCCESS!", 100);
+      currentOTAStatus = OTA_STATUS_SUCCESS;
+      sendOTAAck(OTA_STATUS_SUCCESS, 100);
+      delay(1000);
+      // Device will reboot automatically
+      ESP.restart();
+      break;
+  }
+
+  otaInProgress = false;
 }
 
 // Draw a thick clock hand using 2 filled triangles (forming a rectangle) + rounded caps

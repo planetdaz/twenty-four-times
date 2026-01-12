@@ -3,6 +3,8 @@
 #include <Wire.h>
 #include <TFT_eSPI.h>
 #include <ESPNowComm.h>
+#include <WebServer.h>
+#include <LittleFS.h>
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -69,7 +71,8 @@ enum ControlMode {
   MODE_SIMULATION,  // Random patterns like the simulation
   MODE_DIGITS,      // Display digits 0-9 with animations
   MODE_PROVISION,   // Discovery and provisioning of pixels
-  MODE_MANUAL       // Manual control (future)
+  MODE_MANUAL,      // Manual control (future)
+  MODE_OTA          // OTA firmware update for pixels
 };
 
 ControlMode currentMode = MODE_MENU;
@@ -115,6 +118,29 @@ uint16_t touchX = 0, touchY = 0;
 bool touched = false;
 unsigned long lastTouchTime = 0;
 const unsigned long TOUCH_DEBOUNCE = 200;  // 200ms debounce
+
+// ===== OTA UPDATE STATE =====
+// WiFi AP configuration for OTA
+const char* OTA_AP_SSID = "TwentyFourTimes";
+const char* OTA_AP_PASSWORD = "clockupdate";  // Min 8 characters
+const char* OTA_FIRMWARE_PATH = "/firmware.bin";
+
+// HTTP server for serving firmware
+WebServer otaServer(80);
+bool otaServerRunning = false;
+
+// OTA state tracking
+enum OTAPhase {
+  OTA_IDLE,           // Waiting for user to start
+  OTA_READY,          // Server running, ready to send notify
+  OTA_IN_PROGRESS,    // Update sent, waiting for pixels
+  OTA_COMPLETE        // All done
+};
+
+OTAPhase otaPhase = OTA_IDLE;
+uint32_t firmwareSize = 0;
+uint8_t otaPixelStatus[MAX_PIXELS];  // Status of each pixel (OTAStatus enum)
+uint8_t otaPixelProgress[MAX_PIXELS]; // Progress of each pixel (0-100)
 
 // ===== DIGIT DEFINITIONS =====
 
@@ -216,6 +242,13 @@ void handleProvisionTouch(uint16_t x, uint16_t y);
 void sendDiscoveryCommand();
 void sendHighlightCommand(uint8_t* targetMac, HighlightState state);
 void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId);
+// OTA functions
+void initOTAServer();
+void stopOTAServer();
+void drawOTAScreen();
+void handleOTATouch(uint16_t x, uint16_t y);
+void sendOTANotifyCommand();
+void handleOTAAck(const OTAAckPacket& ack);
 
 // ===== FUNCTIONS =====
 
@@ -330,15 +363,22 @@ void drawMenu() {
   tft.setCursor(25, 195);
   tft.println("Discover & assign");
 
-  // Button 4: Manual (bottom right)
-  tft.fillRoundRect(170, 160, 140, 60, 8, TFT_ORANGE);
+  // Button 4: Manual (bottom right - make room for OTA)
+  tft.fillRoundRect(170, 160, 65, 60, 8, TFT_ORANGE);
   tft.setTextColor(TFT_WHITE, TFT_ORANGE);
-  tft.setTextSize(2);
-  tft.setCursor(195, 175);
-  tft.println("Manual");
   tft.setTextSize(1);
-  tft.setCursor(180, 195);
-  tft.println("Direct control");
+  tft.setCursor(178, 180);
+  tft.println("Manual");
+
+  // Button 5: OTA Update (far bottom right)
+  tft.fillRoundRect(245, 160, 65, 60, 8, TFT_CYAN);
+  tft.setTextColor(TFT_BLACK, TFT_CYAN);
+  tft.setTextSize(2);
+  tft.setCursor(262, 175);
+  tft.println("OTA");
+  tft.setTextSize(1);
+  tft.setCursor(252, 200);
+  tft.println("Update");
 }
 
 // Check which menu button was pressed
@@ -355,9 +395,13 @@ ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
   if (x >= 10 && x <= 160 && y >= 160 && y <= 220) {
     return MODE_PROVISION;
   }
-  // Button 4: Manual (170, 160, 140, 60)
-  if (x >= 170 && x <= 310 && y >= 160 && y <= 220) {
+  // Button 4: Manual (170, 160, 65, 60)
+  if (x >= 170 && x <= 235 && y >= 160 && y <= 220) {
     return MODE_MANUAL;
+  }
+  // Button 5: OTA (245, 160, 65, 60)
+  if (x >= 245 && x <= 310 && y >= 160 && y <= 220) {
+    return MODE_OTA;
   }
 
   return MODE_MENU;  // No button pressed
@@ -432,7 +476,7 @@ void sendRandomPattern() {
 
 // ===== PROVISIONING FUNCTIONS =====
 
-// Receive callback for discovery responses from pixels
+// Receive callback for discovery responses and OTA acks from pixels
 void onMasterPacketReceived(const ESPNowPacket* packet, size_t len) {
   if (packet->command == CMD_DISCOVERY && provisionPhase == PHASE_DISCOVERING) {
     const DiscoveryResponsePacket& resp = packet->discoveryResponse;
@@ -465,6 +509,8 @@ void onMasterPacketReceived(const ESPNowPacket* packet, size_t len) {
       }
       Serial.println(")");
     }
+  } else if (packet->command == CMD_OTA_ACK) {
+    handleOTAAck(packet->otaAck);
   }
 }
 
@@ -1368,6 +1414,317 @@ void sendPing() {
   }
 }
 
+// ===== OTA UPDATE FUNCTIONS =====
+
+// Handle OTA status acknowledgment from pixel
+void handleOTAAck(const OTAAckPacket& ack) {
+  if (ack.pixelId < MAX_PIXELS) {
+    otaPixelStatus[ack.pixelId] = ack.status;
+    otaPixelProgress[ack.pixelId] = ack.progress;
+
+    Serial.print("OTA ACK from pixel ");
+    Serial.print(ack.pixelId);
+    Serial.print(": status=");
+    Serial.print(ack.status);
+    Serial.print(", progress=");
+    Serial.print(ack.progress);
+    Serial.println("%");
+
+    // Refresh OTA screen if we're in OTA mode
+    if (currentMode == MODE_OTA && otaPhase == OTA_IN_PROGRESS) {
+      drawOTAScreen();
+    }
+  }
+}
+
+// HTTP handler for serving firmware binary
+void handleFirmwareRequest() {
+  File file = LittleFS.open(OTA_FIRMWARE_PATH, "r");
+  if (!file) {
+    otaServer.send(404, "text/plain", "Firmware not found");
+    Serial.println("OTA: Firmware file not found!");
+    return;
+  }
+
+  Serial.print("OTA: Serving firmware, size=");
+  Serial.println(file.size());
+
+  otaServer.streamFile(file, "application/octet-stream");
+  file.close();
+}
+
+// Initialize WiFi AP and HTTP server for OTA
+void initOTAServer() {
+  if (otaServerRunning) return;
+
+  Serial.println("OTA: Starting WiFi AP...");
+
+  // Start WiFi in AP+STA mode (allows ESP-NOW to continue working)
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(OTA_AP_SSID, OTA_AP_PASSWORD);
+
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.print("OTA: AP started. IP: ");
+  Serial.println(apIP);
+
+  // Initialize LittleFS
+  if (!LittleFS.begin(true)) {
+    Serial.println("OTA: LittleFS mount failed!");
+    return;
+  }
+
+  // Check if firmware file exists
+  if (LittleFS.exists(OTA_FIRMWARE_PATH)) {
+    File file = LittleFS.open(OTA_FIRMWARE_PATH, "r");
+    firmwareSize = file.size();
+    file.close();
+    Serial.print("OTA: Firmware found, size=");
+    Serial.println(firmwareSize);
+  } else {
+    firmwareSize = 0;
+    Serial.println("OTA: No firmware file found. Upload via USB first.");
+  }
+
+  // Set up HTTP routes
+  otaServer.on("/firmware.bin", HTTP_GET, handleFirmwareRequest);
+  otaServer.on("/", HTTP_GET, []() {
+    otaServer.send(200, "text/plain", "Twenty-Four Times OTA Server");
+  });
+
+  otaServer.begin();
+  otaServerRunning = true;
+  otaPhase = OTA_READY;
+
+  Serial.println("OTA: HTTP server started on port 80");
+
+  // Re-initialize ESP-NOW (WiFi mode change may have disrupted it)
+  ESPNowComm::initSender(ESPNOW_CHANNEL);
+  ESPNowComm::setReceiveCallback(onMasterPacketReceived);
+}
+
+// Stop OTA server and return to normal operation
+void stopOTAServer() {
+  if (!otaServerRunning) return;
+
+  otaServer.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  otaServerRunning = false;
+  otaPhase = OTA_IDLE;
+
+  // Re-initialize ESP-NOW
+  ESPNowComm::initSender(ESPNOW_CHANNEL);
+  ESPNowComm::setReceiveCallback(onMasterPacketReceived);
+
+  Serial.println("OTA: Server stopped");
+}
+
+// Send OTA notify command to all pixels
+void sendOTANotifyCommand() {
+  if (firmwareSize == 0) {
+    Serial.println("OTA: No firmware to send!");
+    return;
+  }
+
+  ESPNowPacket packet;
+  packet.otaNotify.command = CMD_OTA_NOTIFY;
+
+  // Copy WiFi credentials
+  strncpy(packet.otaNotify.ssid, OTA_AP_SSID, 31);
+  packet.otaNotify.ssid[31] = '\0';
+  strncpy(packet.otaNotify.password, OTA_AP_PASSWORD, 31);
+  packet.otaNotify.password[31] = '\0';
+
+  // Build firmware URL using AP IP
+  IPAddress apIP = WiFi.softAPIP();
+  snprintf(packet.otaNotify.firmwareUrl, 127, "http://%d.%d.%d.%d/firmware.bin",
+           apIP[0], apIP[1], apIP[2], apIP[3]);
+  packet.otaNotify.firmwareUrl[127] = '\0';
+
+  packet.otaNotify.firmwareSize = firmwareSize;
+  packet.otaNotify.firmwareCrc32 = 0;  // Skip CRC check for now
+
+  Serial.print("OTA: Sending notify - URL: ");
+  Serial.println(packet.otaNotify.firmwareUrl);
+
+  if (ESPNowComm::sendPacket(&packet, sizeof(OTANotifyPacket))) {
+    Serial.println("OTA: Notify command sent!");
+    otaPhase = OTA_IN_PROGRESS;
+
+    // Reset pixel status tracking
+    for (int i = 0; i < MAX_PIXELS; i++) {
+      otaPixelStatus[i] = OTA_STATUS_IDLE;
+      otaPixelProgress[i] = 0;
+    }
+  } else {
+    Serial.println("OTA: Failed to send notify command!");
+  }
+}
+
+// Draw OTA screen
+void drawOTAScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title
+  tft.setTextColor(TFT_ORANGE, COLOR_BG);
+  tft.setTextSize(2);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("OTA Update", 160, 5);
+  tft.setTextDatum(TL_DATUM);
+
+  tft.setTextSize(1);
+
+  if (otaPhase == OTA_IDLE) {
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setCursor(10, 35);
+    tft.println("Update pixel firmware wirelessly.");
+    tft.setCursor(10, 50);
+    tft.println("1. Upload firmware.bin via USB");
+    tft.setCursor(10, 65);
+    tft.println("2. Start server & trigger update");
+
+    // Start Server button
+    tft.fillRoundRect(60, 100, 200, 50, 8, TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+    tft.setTextSize(2);
+    tft.setCursor(90, 115);
+    tft.println("Start Server");
+
+    // Back button
+    tft.fillRoundRect(110, 170, 100, 40, 8, TFT_DARKGREY);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setCursor(135, 180);
+    tft.println("Back");
+
+  } else if (otaPhase == OTA_READY) {
+    tft.setTextColor(TFT_GREEN, COLOR_BG);
+    tft.setCursor(10, 35);
+    tft.print("Server running! SSID: ");
+    tft.println(OTA_AP_SSID);
+
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setCursor(10, 50);
+    tft.print("Firmware size: ");
+    if (firmwareSize > 0) {
+      tft.print(firmwareSize / 1024);
+      tft.println(" KB");
+    } else {
+      tft.setTextColor(TFT_RED, COLOR_BG);
+      tft.println("NOT FOUND!");
+    }
+
+    // Send Update button (only if firmware exists)
+    if (firmwareSize > 0) {
+      tft.fillRoundRect(60, 80, 200, 50, 8, TFT_BLUE);
+      tft.setTextColor(TFT_WHITE, TFT_BLUE);
+      tft.setTextSize(2);
+      tft.setCursor(80, 95);
+      tft.println("Send Update");
+    }
+
+    // Stop Server button
+    tft.fillRoundRect(60, 145, 200, 40, 8, TFT_RED);
+    tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.setTextSize(2);
+    tft.setCursor(95, 155);
+    tft.println("Stop Server");
+
+    // Back button
+    tft.fillRoundRect(110, 195, 100, 35, 8, TFT_DARKGREY);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setTextSize(1);
+    tft.setCursor(140, 205);
+    tft.println("Back");
+
+  } else if (otaPhase == OTA_IN_PROGRESS) {
+    tft.setTextColor(TFT_YELLOW, COLOR_BG);
+    tft.setTextSize(2);
+    tft.setCursor(50, 35);
+    tft.println("Update in progress...");
+
+    // Count pixels by status
+    int idle = 0, downloading = 0, success = 0, error = 0;
+    for (int i = 0; i < MAX_PIXELS; i++) {
+      switch (otaPixelStatus[i]) {
+        case OTA_STATUS_IDLE: idle++; break;
+        case OTA_STATUS_STARTING:
+        case OTA_STATUS_DOWNLOADING:
+        case OTA_STATUS_FLASHING: downloading++; break;
+        case OTA_STATUS_SUCCESS: success++; break;
+        case OTA_STATUS_ERROR: error++; break;
+      }
+    }
+
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setCursor(10, 70);
+    tft.print("Waiting: "); tft.println(idle);
+    tft.setCursor(10, 85);
+    tft.print("Updating: "); tft.println(downloading);
+    tft.setCursor(10, 100);
+    tft.setTextColor(TFT_GREEN, COLOR_BG);
+    tft.print("Success: "); tft.println(success);
+    tft.setCursor(10, 115);
+    tft.setTextColor(TFT_RED, COLOR_BG);
+    tft.print("Failed: "); tft.println(error);
+
+    // Done button (always available to exit)
+    tft.fillRoundRect(110, 180, 100, 40, 8, TFT_DARKGREY);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setTextSize(2);
+    tft.setCursor(135, 190);
+    tft.println("Done");
+  }
+}
+
+// Handle touch in OTA mode
+void handleOTATouch(uint16_t x, uint16_t y) {
+  if (otaPhase == OTA_IDLE) {
+    // Start Server button (60, 100, 200, 50)
+    if (x >= 60 && x <= 260 && y >= 100 && y <= 150) {
+      initOTAServer();
+      drawOTAScreen();
+      return;
+    }
+    // Back button (110, 170, 100, 40)
+    if (x >= 110 && x <= 210 && y >= 170 && y <= 210) {
+      currentMode = MODE_MENU;
+      drawMenu();
+      return;
+    }
+
+  } else if (otaPhase == OTA_READY) {
+    // Send Update button (60, 80, 200, 50) - only if firmware exists
+    if (firmwareSize > 0 && x >= 60 && x <= 260 && y >= 80 && y <= 130) {
+      sendOTANotifyCommand();
+      drawOTAScreen();
+      return;
+    }
+    // Stop Server button (60, 145, 200, 40)
+    if (x >= 60 && x <= 260 && y >= 145 && y <= 185) {
+      stopOTAServer();
+      drawOTAScreen();
+      return;
+    }
+    // Back button (110, 195, 100, 35)
+    if (x >= 110 && x <= 210 && y >= 195 && y <= 230) {
+      stopOTAServer();
+      currentMode = MODE_MENU;
+      drawMenu();
+      return;
+    }
+
+  } else if (otaPhase == OTA_IN_PROGRESS) {
+    // Done button (110, 180, 100, 40)
+    if (x >= 110 && x <= 210 && y >= 180 && y <= 220) {
+      stopOTAServer();
+      currentMode = MODE_MENU;
+      drawMenu();
+      return;
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -1523,6 +1880,10 @@ void loop() {
             drawManualScreen();
             lastPingTime = currentTime;  // Initialize ping timer
             break;
+          case MODE_OTA:
+            otaPhase = OTA_IDLE;
+            drawOTAScreen();
+            break;
           default:
             break;
         }
@@ -1536,6 +1897,9 @@ void loop() {
     } else if (currentMode == MODE_PROVISION) {
       // Provision mode has its own touch handler
       handleProvisionTouch(tx, ty);
+    } else if (currentMode == MODE_OTA) {
+      // OTA mode has its own touch handler
+      handleOTATouch(tx, ty);
     } else {
       // Any touch in other modes returns to menu
       currentMode = MODE_MENU;
@@ -1620,6 +1984,14 @@ void loop() {
       if (currentTime - lastPingTime >= PING_INTERVAL) {
         sendPing();
         lastPingTime = currentTime;
+      }
+      break;
+    }
+
+    case MODE_OTA: {
+      // Handle HTTP server requests when running
+      if (otaServerRunning) {
+        otaServer.handleClient();
       }
       break;
     }

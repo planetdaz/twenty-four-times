@@ -31,7 +31,9 @@ enum CommandType : uint8_t {
                               // TODO: Currently unused - master uses CMD_HIGHLIGHT instead.
                               //       Either integrate into provisioning UI or remove.
   CMD_DISCOVERY = 0x06,       // Master requests pixels to respond with MAC
-  CMD_HIGHLIGHT = 0x07        // Highlight a specific pixel during assignment
+  CMD_HIGHLIGHT = 0x07,       // Highlight a specific pixel during assignment
+  CMD_OTA_NOTIFY = 0x08,      // Notify pixels that OTA firmware is available
+  CMD_OTA_ACK = 0x09          // Pixel acknowledges OTA command (response)
 };
 
 // Transition/easing types (matches pixel's EasingType enum)
@@ -267,6 +269,38 @@ struct __attribute__((packed)) HighlightPacket {
   HighlightState state;          // Highlight state to display
 };
 
+// ===== OTA (Over-The-Air) UPDATE PACKETS =====
+
+// OTA status codes
+enum OTAStatus : uint8_t {
+  OTA_STATUS_IDLE = 0,           // Not doing OTA
+  OTA_STATUS_STARTING = 1,       // Received notify, preparing
+  OTA_STATUS_DOWNLOADING = 2,    // Downloading firmware
+  OTA_STATUS_FLASHING = 3,       // Writing to flash
+  OTA_STATUS_SUCCESS = 4,        // OTA complete, will reboot
+  OTA_STATUS_ERROR = 5           // OTA failed
+};
+
+// OTA notify packet - master tells pixels to start OTA update
+// Pixels will connect to master's WiFi AP and download firmware from HTTP server
+struct __attribute__((packed)) OTANotifyPacket {
+  CommandType command;           // CMD_OTA_NOTIFY
+  char ssid[32];                 // WiFi SSID to connect to (master's AP)
+  char password[32];             // WiFi password
+  char firmwareUrl[128];         // Full URL to firmware binary (e.g., "http://192.168.4.1/firmware.bin")
+  uint32_t firmwareSize;         // Expected firmware size in bytes
+  uint32_t firmwareCrc32;        // CRC32 checksum for verification (optional, 0 = skip check)
+};
+
+// OTA acknowledgment packet - pixel reports status back to master
+struct __attribute__((packed)) OTAAckPacket {
+  CommandType command;           // CMD_OTA_ACK
+  uint8_t pixelId;               // Pixel reporting status
+  OTAStatus status;              // Current OTA status
+  uint8_t progress;              // Download/flash progress (0-100)
+  uint16_t errorCode;            // Error code if status == OTA_STATUS_ERROR
+};
+
 // Generic packet union for easy handling
 union ESPNowPacket {
   CommandType command;
@@ -277,6 +311,8 @@ union ESPNowPacket {
   DiscoveryCommandPacket discovery;
   DiscoveryResponsePacket discoveryResponse;
   HighlightPacket highlight;
+  OTANotifyPacket otaNotify;
+  OTAAckPacket otaAck;
   uint8_t raw[250];  // ESP-NOW max packet size
 };
 
