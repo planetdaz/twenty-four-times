@@ -846,6 +846,10 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
   displayOTAProgress("Connecting", 0);
 
   Serial.println("OTA: Connecting to WiFi...");
+  Serial.print("OTA: SSID: ");
+  Serial.println(notify.ssid);
+  Serial.print("OTA: URL: ");
+  Serial.println(notify.firmwareUrl);
 
   // Disconnect ESP-NOW temporarily - WiFi mode change required
   esp_now_deinit();
@@ -865,6 +869,8 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("\nOTA: WiFi connection failed!");
+    Serial.print("OTA: WiFi status: ");
+    Serial.println(WiFi.status());
     displayOTAProgress("WiFi Failed", 0);
     currentOTAStatus = OTA_STATUS_ERROR;
 

@@ -1498,10 +1498,15 @@ void initOTAServer() {
 
   // Start WiFi in AP+STA mode (allows ESP-NOW to continue working)
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(OTA_AP_SSID, OTA_AP_PASSWORD);
+
+  // IMPORTANT: Start AP on same channel as ESP-NOW (channel 1)
+  // Parameters: ssid, password, channel, ssid_hidden, max_connection
+  WiFi.softAP(OTA_AP_SSID, OTA_AP_PASSWORD, ESPNOW_CHANNEL, 0, 4);
 
   IPAddress apIP = WiFi.softAPIP();
-  Serial.print("OTA: AP started. IP: ");
+  Serial.print("OTA: AP started on channel ");
+  Serial.println(ESPNOW_CHANNEL);
+  Serial.print("OTA: AP IP: ");
   Serial.println(apIP);
 
   // Initialize LittleFS
