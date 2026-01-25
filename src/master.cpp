@@ -1439,7 +1439,7 @@ void handleOTAAck(const OTAAckPacket& ack) {
 
 // HTTP handler for serving firmware binary
 void handleFirmwareRequest() {
-  File file = LittleFS.open(OTA_FIRMWARE_PATH, "r");
+  fs::File file = LittleFS.open(OTA_FIRMWARE_PATH, "r");
   if (!file) {
     otaServer.send(404, "text/plain", "Firmware not found");
     Serial.println("OTA: Firmware file not found!");
@@ -1475,7 +1475,7 @@ void initOTAServer() {
 
   // Check if firmware file exists
   if (LittleFS.exists(OTA_FIRMWARE_PATH)) {
-    File file = LittleFS.open(OTA_FIRMWARE_PATH, "r");
+    fs::File file = LittleFS.open(OTA_FIRMWARE_PATH, "r");
     firmwareSize = file.size();
     file.close();
     Serial.print("OTA: Firmware found, size=");
