@@ -917,25 +917,37 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
       sendOTAAck(OTA_STATUS_ERROR, 0, httpUpdate.getLastError());
 
       // Restore ESP-NOW
-      delay(3000);
+      delay(5000);  // Show error for 5 seconds
+      Serial.println("OTA: Restoring ESP-NOW...");
       WiFi.disconnect(true);
       WiFi.mode(WIFI_STA);
       ESPNowComm::initReceiver(ESPNOW_CHANNEL);
       ESPNowComm::setReceiveCallback(onPacketReceived);
       lastPacketTime = millis();  // Reset timeout to avoid immediate error
+
+      // Clear the OTA screen
+      canvas->fillScreen(GC9A01A_BLACK);
+      tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+      Serial.println("OTA: Returned to normal operation");
       break;
 
     case HTTP_UPDATE_NO_UPDATES:
       Serial.println("OTA: No updates available (same firmware)");
       displayOTAProgress("Same Version", 0);
+      delay(3000);  // Show message for 3 seconds
 
       // Restore ESP-NOW
-      delay(2000);
+      Serial.println("OTA: Restoring ESP-NOW...");
       WiFi.disconnect(true);
       WiFi.mode(WIFI_STA);
       ESPNowComm::initReceiver(ESPNOW_CHANNEL);
       ESPNowComm::setReceiveCallback(onPacketReceived);
       lastPacketTime = millis();  // Reset timeout to avoid immediate error
+
+      // Clear the OTA screen
+      canvas->fillScreen(GC9A01A_BLACK);
+      tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+      Serial.println("OTA: Returned to normal operation");
       break;
 
     case HTTP_UPDATE_OK:

@@ -156,6 +156,7 @@ struct PixelVersionInfo {
 };
 PixelVersionInfo pixelVersions[MAX_PIXELS];
 unsigned long versionRequestTime = 0;
+bool versionScreenNeedsRedraw = false;  // Flag to redraw from main loop, not callback
 
 // ===== DIGIT DEFINITIONS =====
 
@@ -1776,9 +1777,9 @@ void handleVersionResponse(const VersionResponsePacket& resp) {
     Serial.print(".");
     Serial.println(resp.versionMinor);
 
-    // Refresh version screen if we're in version mode
+    // Set flag to redraw from main loop (don't draw from callback/interrupt)
     if (currentMode == MODE_VERSION) {
-      drawVersionScreen();
+      versionScreenNeedsRedraw = true;
     }
   }
 }
@@ -2179,6 +2180,15 @@ void loop() {
       // Handle HTTP server requests when running
       if (otaServerRunning) {
         otaServer.handleClient();
+      }
+      break;
+    }
+
+    case MODE_VERSION: {
+      // Check if version screen needs redraw (from callback)
+      if (versionScreenNeedsRedraw) {
+        versionScreenNeedsRedraw = false;
+        drawVersionScreen();
       }
       break;
     }
