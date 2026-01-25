@@ -1539,9 +1539,9 @@ void initOTAServer() {
 
   Serial.println("OTA: HTTP server started on port 80");
 
-  // Re-initialize ESP-NOW (WiFi mode change may have disrupted it)
-  ESPNowComm::initSender(ESPNOW_CHANNEL);
-  ESPNowComm::setReceiveCallback(onMasterPacketReceived);
+  // ESP-NOW should still work in AP_STA mode on the same channel
+  // Don't re-initialize it as that would kill the AP mode!
+  Serial.println("OTA: ESP-NOW remains active in AP+STA mode");
 }
 
 // Stop OTA server and return to normal operation
