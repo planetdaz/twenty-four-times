@@ -1675,34 +1675,33 @@ void drawOTAScreen() {
   } else if (otaPhase == OTA_IN_PROGRESS) {
     tft.setTextColor(TFT_YELLOW, COLOR_BG);
     tft.setTextSize(2);
-    tft.setCursor(50, 35);
-    tft.println("Update in progress...");
+    tft.setCursor(30, 35);
+    tft.println("Update Sent!");
 
-    // Count pixels by status
-    int idle = 0, downloading = 0, success = 0, error = 0;
+    // Count pixels that acknowledged starting
+    int started = 0;
     for (int i = 0; i < MAX_PIXELS; i++) {
-      switch (otaPixelStatus[i]) {
-        case OTA_STATUS_IDLE: idle++; break;
-        case OTA_STATUS_STARTING:
-        case OTA_STATUS_DOWNLOADING:
-        case OTA_STATUS_FLASHING: downloading++; break;
-        case OTA_STATUS_SUCCESS: success++; break;
-        case OTA_STATUS_ERROR: error++; break;
+      if (otaPixelStatus[i] >= OTA_STATUS_STARTING) {
+        started++;
       }
     }
 
     tft.setTextSize(1);
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setCursor(10, 70);
-    tft.print("Waiting: "); tft.println(idle);
+    tft.setCursor(10, 65);
+    tft.print("Pixels acknowledged: ");
+    tft.println(started);
+
     tft.setCursor(10, 85);
-    tft.print("Updating: "); tft.println(downloading);
+    tft.println("Watch pixel screens for progress.");
     tft.setCursor(10, 100);
-    tft.setTextColor(TFT_GREEN, COLOR_BG);
-    tft.print("Success: "); tft.println(success);
-    tft.setCursor(10, 115);
-    tft.setTextColor(TFT_RED, COLOR_BG);
-    tft.print("Failed: "); tft.println(error);
+    tft.println("Pixels will reboot when complete.");
+
+    tft.setTextColor(TFT_DARKGREY, COLOR_BG);
+    tft.setCursor(10, 125);
+    tft.println("Note: Status updates limited while");
+    tft.setCursor(10, 140);
+    tft.println("pixels are downloading via WiFi.");
 
     // Done button (always available to exit)
     tft.fillRoundRect(110, 180, 100, 40, 8, TFT_DARKGREY);

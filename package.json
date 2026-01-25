@@ -1,0 +1,12 @@
+{
+  "name": "twenty-four-times",
+  "version": "1.0.0",
+  "description": "ESP32 clock display with 24 synchronized pixels",
+  "scripts": {
+    "version:bump": "node scripts/bump-version.js"
+  },
+  "keywords": ["esp32", "clock", "display"],
+  "author": "",
+  "license": "MIT"
+}
+
