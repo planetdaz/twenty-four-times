@@ -6,6 +6,10 @@
 #include <WebServer.h>
 #include <LittleFS.h>
 
+// ===== FIRMWARE VERSION =====
+#define FIRMWARE_VERSION_MAJOR 1
+#define FIRMWARE_VERSION_MINOR 0
+
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
 // and broadcasts synchronized commands to all pixel displays via ESP-NOW
@@ -72,7 +76,8 @@ enum ControlMode {
   MODE_DIGITS,      // Display digits 0-9 with animations
   MODE_PROVISION,   // Discovery and provisioning of pixels
   MODE_MANUAL,      // Manual control (future)
-  MODE_OTA          // OTA firmware update for pixels
+  MODE_OTA,         // OTA firmware update for pixels
+  MODE_VERSION      // Display firmware versions
 };
 
 ControlMode currentMode = MODE_MENU;
@@ -141,6 +146,16 @@ OTAPhase otaPhase = OTA_IDLE;
 uint32_t firmwareSize = 0;
 uint8_t otaPixelStatus[MAX_PIXELS];  // Status of each pixel (OTAStatus enum)
 uint8_t otaPixelProgress[MAX_PIXELS]; // Progress of each pixel (0-100)
+
+// ===== VERSION TRACKING =====
+// Stores version info received from pixels
+struct PixelVersionInfo {
+  bool received;
+  uint8_t major;
+  uint8_t minor;
+};
+PixelVersionInfo pixelVersions[MAX_PIXELS];
+unsigned long versionRequestTime = 0;
 
 // ===== DIGIT DEFINITIONS =====
 
@@ -249,6 +264,11 @@ void drawOTAScreen();
 void handleOTATouch(uint16_t x, uint16_t y);
 void sendOTANotifyCommand();
 void handleOTAAck(const OTAAckPacket& ack);
+// Version functions
+void drawVersionScreen();
+void handleVersionTouch(uint16_t x, uint16_t y);
+void sendGetVersionCommand();
+void handleVersionResponse(const VersionResponsePacket& resp);
 
 // ===== FUNCTIONS =====
 
@@ -379,10 +399,24 @@ void drawMenu() {
   tft.setTextSize(1);
   tft.setCursor(252, 200);
   tft.println("Update");
+
+  // Version button (small, top right corner)
+  tft.fillRoundRect(270, 5, 45, 25, 4, TFT_DARKGREY);
+  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+  tft.setTextSize(1);
+  tft.setCursor(275, 12);
+  tft.print("v");
+  tft.print(FIRMWARE_VERSION_MAJOR);
+  tft.print(".");
+  tft.print(FIRMWARE_VERSION_MINOR);
 }
 
 // Check which menu button was pressed
 ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
+  // Version button (270, 5, 45, 25) - check first since it's small
+  if (x >= 270 && x <= 315 && y >= 5 && y <= 30) {
+    return MODE_VERSION;
+  }
   // Button 1: Simulation (10, 90, 150, 60)
   if (x >= 10 && x <= 160 && y >= 90 && y <= 150) {
     return MODE_SIMULATION;
@@ -511,6 +545,8 @@ void onMasterPacketReceived(const ESPNowPacket* packet, size_t len) {
     }
   } else if (packet->command == CMD_OTA_ACK) {
     handleOTAAck(packet->otaAck);
+  } else if (packet->command == CMD_VERSION_RESPONSE) {
+    handleVersionResponse(packet->versionResponse);
   }
 }
 
@@ -1725,6 +1761,146 @@ void handleOTATouch(uint16_t x, uint16_t y) {
   }
 }
 
+// ===== VERSION FUNCTIONS =====
+
+// Handle version response from pixel
+void handleVersionResponse(const VersionResponsePacket& resp) {
+  if (resp.pixelId < MAX_PIXELS) {
+    pixelVersions[resp.pixelId].received = true;
+    pixelVersions[resp.pixelId].major = resp.versionMajor;
+    pixelVersions[resp.pixelId].minor = resp.versionMinor;
+
+    Serial.print("Version response from pixel ");
+    Serial.print(resp.pixelId);
+    Serial.print(": v");
+    Serial.print(resp.versionMajor);
+    Serial.print(".");
+    Serial.println(resp.versionMinor);
+
+    // Refresh version screen if we're in version mode
+    if (currentMode == MODE_VERSION) {
+      drawVersionScreen();
+    }
+  }
+}
+
+// Send get version command to all pixels
+void sendGetVersionCommand() {
+  ESPNowPacket packet;
+  packet.getVersion.command = CMD_GET_VERSION;
+  packet.getVersion.displayOnScreen = true;
+
+  if (ESPNowComm::sendPacket(&packet, sizeof(GetVersionPacket))) {
+    Serial.println("Sent GET_VERSION command to all pixels");
+  } else {
+    Serial.println("Failed to send GET_VERSION command");
+  }
+}
+
+// Draw version screen
+void drawVersionScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title with master version
+  tft.setTextColor(TFT_MAGENTA, COLOR_BG);
+  tft.setTextSize(2);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("Firmware Versions", 160, 5);
+  tft.setTextDatum(TL_DATUM);
+
+  // Master version
+  tft.setTextColor(TFT_WHITE, COLOR_BG);
+  tft.setTextSize(1);
+  tft.setCursor(10, 30);
+  tft.print("Master: v");
+  tft.print(FIRMWARE_VERSION_MAJOR);
+  tft.print(".");
+  tft.println(FIRMWARE_VERSION_MINOR);
+
+  // Count responses
+  int received = 0;
+  for (int i = 0; i < MAX_PIXELS; i++) {
+    if (pixelVersions[i].received) received++;
+  }
+
+  tft.setCursor(10, 45);
+  tft.print("Pixels responding: ");
+  tft.print(received);
+  tft.print("/");
+  tft.println(MAX_PIXELS);
+
+  // Draw pixel version grid (6 columns x 4 rows)
+  int startY = 65;
+  int cellW = 52;
+  int cellH = 35;
+
+  for (int i = 0; i < MAX_PIXELS; i++) {
+    int col = i % 6;
+    int row = i / 6;
+    int x = 5 + col * cellW;
+    int y = startY + row * cellH;
+
+    if (pixelVersions[i].received) {
+      tft.fillRoundRect(x, y, cellW - 2, cellH - 2, 4, TFT_DARKGREEN);
+      tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+    } else {
+      tft.fillRoundRect(x, y, cellW - 2, cellH - 2, 4, TFT_DARKGREY);
+      tft.setTextColor(TFT_LIGHTGREY, TFT_DARKGREY);
+    }
+
+    tft.setTextSize(1);
+    tft.setCursor(x + 3, y + 5);
+    tft.print("P");
+    tft.print(i);
+
+    if (pixelVersions[i].received) {
+      tft.setCursor(x + 3, y + 18);
+      tft.print("v");
+      tft.print(pixelVersions[i].major);
+      tft.print(".");
+      tft.print(pixelVersions[i].minor);
+    } else {
+      tft.setCursor(x + 8, y + 18);
+      tft.print("---");
+    }
+  }
+
+  // Refresh button
+  tft.fillRoundRect(60, 210, 90, 25, 4, TFT_BLUE);
+  tft.setTextColor(TFT_WHITE, TFT_BLUE);
+  tft.setTextSize(1);
+  tft.setCursor(75, 215);
+  tft.println("Refresh");
+
+  // Back button
+  tft.fillRoundRect(170, 210, 90, 25, 4, TFT_DARKGREY);
+  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+  tft.setCursor(195, 215);
+  tft.println("Back");
+}
+
+// Handle touch in version mode
+void handleVersionTouch(uint16_t x, uint16_t y) {
+  // Refresh button (60, 210, 90, 25)
+  if (x >= 60 && x <= 150 && y >= 210 && y <= 235) {
+    // Clear and re-request
+    for (int i = 0; i < MAX_PIXELS; i++) {
+      pixelVersions[i].received = false;
+    }
+    versionRequestTime = millis();
+    sendGetVersionCommand();
+    drawVersionScreen();
+    return;
+  }
+
+  // Back button (170, 210, 90, 25)
+  if (x >= 170 && x <= 260 && y >= 210 && y <= 235) {
+    currentMode = MODE_MENU;
+    drawMenu();
+    return;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -1884,6 +2060,15 @@ void loop() {
             otaPhase = OTA_IDLE;
             drawOTAScreen();
             break;
+          case MODE_VERSION:
+            // Clear version tracking and request versions
+            for (int i = 0; i < MAX_PIXELS; i++) {
+              pixelVersions[i].received = false;
+            }
+            versionRequestTime = currentTime;
+            sendGetVersionCommand();
+            drawVersionScreen();
+            break;
           default:
             break;
         }
@@ -1900,6 +2085,9 @@ void loop() {
     } else if (currentMode == MODE_OTA) {
       // OTA mode has its own touch handler
       handleOTATouch(tx, ty);
+    } else if (currentMode == MODE_VERSION) {
+      // Version mode has its own touch handler
+      handleVersionTouch(tx, ty);
     } else {
       // Any touch in other modes returns to menu
       currentMode = MODE_MENU;

@@ -12,6 +12,10 @@
 // Based on the twenty-four-times simulation
 // Now with ESP-NOW communication for synchronized multi-pixel operation
 
+// ===== FIRMWARE VERSION =====
+#define FIRMWARE_VERSION_MAJOR 1
+#define FIRMWARE_VERSION_MINOR 0
+
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
 // Use CMD_SET_PIXEL_ID command from master to provision each pixel.
@@ -755,6 +759,36 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       break;
     }
 
+    case CMD_GET_VERSION: {
+      const GetVersionPacket& cmd = packet->getVersion;
+      Serial.println("ESP-NOW: Get version command received");
+
+      // Send version response back to master
+      ESPNowPacket response;
+      response.versionResponse.command = CMD_VERSION_RESPONSE;
+      response.versionResponse.pixelId = pixelId;
+      response.versionResponse.versionMajor = FIRMWARE_VERSION_MAJOR;
+      response.versionResponse.versionMinor = FIRMWARE_VERSION_MINOR;
+      ESPNowComm::sendPacket(&response, sizeof(VersionResponsePacket));
+
+      // Display version on screen if requested
+      if (cmd.displayOnScreen) {
+        canvas->fillScreen(GC9A01A_MAGENTA);
+        canvas->setTextColor(GC9A01A_WHITE);
+        canvas->setTextSize(3);
+        canvas->setCursor(60, 80);
+        canvas->print("Pixel ");
+        canvas->println(pixelId);
+        canvas->setCursor(80, 130);
+        canvas->print("v");
+        canvas->print(FIRMWARE_VERSION_MAJOR);
+        canvas->print(".");
+        canvas->println(FIRMWARE_VERSION_MINOR);
+        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+      }
+      break;
+    }
+
     default:
       Serial.print("ESP-NOW: Unknown command: ");
       Serial.println(packet->command);
@@ -840,6 +874,7 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
     WiFi.mode(WIFI_STA);
     ESPNowComm::initReceiver(ESPNOW_CHANNEL);
     ESPNowComm::setReceiveCallback(onPacketReceived);
+    lastPacketTime = millis();  // Reset timeout to avoid immediate error
     otaInProgress = false;
     return;
   }
@@ -887,11 +922,12 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
       WiFi.mode(WIFI_STA);
       ESPNowComm::initReceiver(ESPNOW_CHANNEL);
       ESPNowComm::setReceiveCallback(onPacketReceived);
+      lastPacketTime = millis();  // Reset timeout to avoid immediate error
       break;
 
     case HTTP_UPDATE_NO_UPDATES:
-      Serial.println("OTA: No updates available");
-      displayOTAProgress("No Update", 0);
+      Serial.println("OTA: No updates available (same firmware)");
+      displayOTAProgress("Same Version", 0);
 
       // Restore ESP-NOW
       delay(2000);
@@ -899,6 +935,7 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
       WiFi.mode(WIFI_STA);
       ESPNowComm::initReceiver(ESPNOW_CHANNEL);
       ESPNowComm::setReceiveCallback(onPacketReceived);
+      lastPacketTime = millis();  // Reset timeout to avoid immediate error
       break;
 
     case HTTP_UPDATE_OK:
@@ -1094,9 +1131,17 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
 
+  // ---- Skip normal loop during OTA ----
+  // OTA update handles its own display and WiFi, so skip everything else
+  if (otaInProgress) {
+    delay(10);
+    return;
+  }
+
   // ---- ESP-NOW Timeout Check ----
   // If we haven't received a packet in PACKET_TIMEOUT ms, show error state
-  if (espnowEnabled && !errorState && (currentTime - lastPacketTime > PACKET_TIMEOUT)) {
+  // Skip this check during OTA since ESP-NOW is disabled
+  if (espnowEnabled && !errorState && !otaInProgress && (currentTime - lastPacketTime > PACKET_TIMEOUT)) {
     Serial.println("\n!!! ESP-NOW TIMEOUT - NO MASTER SIGNAL !!!\n");
     errorState = true;
   }

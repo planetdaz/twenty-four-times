@@ -33,7 +33,9 @@ enum CommandType : uint8_t {
   CMD_DISCOVERY = 0x06,       // Master requests pixels to respond with MAC
   CMD_HIGHLIGHT = 0x07,       // Highlight a specific pixel during assignment
   CMD_OTA_NOTIFY = 0x08,      // Notify pixels that OTA firmware is available
-  CMD_OTA_ACK = 0x09          // Pixel acknowledges OTA command (response)
+  CMD_OTA_ACK = 0x09,         // Pixel acknowledges OTA command (response)
+  CMD_GET_VERSION = 0x0A,     // Request pixels to display their version
+  CMD_VERSION_RESPONSE = 0x0B // Pixel responds with version info
 };
 
 // Transition/easing types (matches pixel's EasingType enum)
@@ -301,6 +303,22 @@ struct __attribute__((packed)) OTAAckPacket {
   uint16_t errorCode;            // Error code if status == OTA_STATUS_ERROR
 };
 
+// ===== VERSION PACKETS =====
+
+// Get version command - master requests pixels to show/report version
+struct __attribute__((packed)) GetVersionPacket {
+  CommandType command;           // CMD_GET_VERSION
+  bool displayOnScreen;          // If true, pixel shows version on screen
+};
+
+// Version response packet - pixel reports its version to master
+struct __attribute__((packed)) VersionResponsePacket {
+  CommandType command;           // CMD_VERSION_RESPONSE
+  uint8_t pixelId;               // Pixel reporting
+  uint8_t versionMajor;          // Major version (e.g., 1 in "1.2")
+  uint8_t versionMinor;          // Minor version (e.g., 2 in "1.2")
+};
+
 // Generic packet union for easy handling
 union ESPNowPacket {
   CommandType command;
@@ -313,6 +331,8 @@ union ESPNowPacket {
   HighlightPacket highlight;
   OTANotifyPacket otaNotify;
   OTAAckPacket otaAck;
+  GetVersionPacket getVersion;
+  VersionResponsePacket versionResponse;
   uint8_t raw[250];  // ESP-NOW max packet size
 };
 
