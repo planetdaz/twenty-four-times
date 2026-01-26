@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 1
+#define FIRMWARE_VERSION_MINOR 2
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -148,6 +148,13 @@ const unsigned long PACKET_TIMEOUT = 10000;  // 10 seconds without packet = show
 bool otaInProgress = false;        // True when performing OTA update
 OTAStatus currentOTAStatus = OTA_STATUS_IDLE;
 uint8_t currentOTAProgress = 0;    // 0-100
+
+// OTA requests are received via ESP-NOW callback (WiFi task context).
+// IMPORTANT: Do NOT run WiFi.mode()/scan/begin/update inside the receive callback.
+// Instead, latch the request and perform OTA from loop() context.
+static portMUX_TYPE otaRequestMux = portMUX_INITIALIZER_UNLOCKED;
+volatile bool otaRequestPending = false;
+OTANotifyPacket otaPendingNotify;
 
 // Forward declarations for OTA
 void sendOTAAck(OTAStatus status, uint8_t progress, uint16_t errorCode = 0);
@@ -755,8 +762,11 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       Serial.print("  Size: ");
       Serial.println(notify.firmwareSize);
 
-      // Start OTA update process
-      performOTAUpdate(notify);
+	      // Latch OTA request; perform it later from loop() (safe context)
+	      portENTER_CRITICAL(&otaRequestMux);
+	      otaPendingNotify = notify;
+	      otaRequestPending = true;
+	      portEXIT_CRITICAL(&otaRequestMux);
       break;
     }
 
@@ -856,44 +866,44 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
   Serial.println("OTA: Deinitializing ESP-NOW...");
   esp_now_deinit();
 
-  // Restart WiFi subsystem properly
-  Serial.println("OTA: Restarting WiFi...");
-  WiFi.disconnect();
-  delay(100);
-  WiFi.mode(WIFI_MODE_NULL);
-  delay(100);
-  WiFi.mode(WIFI_STA);
-  delay(500);
+	// Reconfigure WiFi in a safe context (we are running from loop(), not callback)
+	// NOTE: Avoid WiFi.mode(WIFI_MODE_NULL) here; it has been observed to hang on ESP32-S3.
+	Serial.println("OTA: Preparing WiFi STA...");
+	WiFi.disconnect(true);
+	delay(200);
+	WiFi.mode(WIFI_STA);
+	delay(200);
 
-  // Scan for the AP first to verify it's visible
-  Serial.println("OTA: Scanning for networks...");
-  Serial.flush();
-  int n = WiFi.scanNetworks();
-  Serial.print("OTA: Found ");
-  Serial.print(n);
-  Serial.println(" networks");
+	// Scan for the AP first to verify it's visible (best-effort)
+	Serial.println("OTA: Scanning for networks...");
+	int n = WiFi.scanNetworks();
+	Serial.print("OTA: Found ");
+	Serial.print(n);
+	Serial.println(" networks");
+	if (n >= 0) {
+	  bool apFound = false;
+	  for (int i = 0; i < n; i++) {
+	    Serial.print("  ");
+	    Serial.print(i);
+	    Serial.print(": ");
+	    Serial.print(WiFi.SSID(i));
+	    Serial.print(" (Ch ");
+	    Serial.print(WiFi.channel(i));
+	    Serial.print(", RSSI ");
+	    Serial.print(WiFi.RSSI(i));
+	    Serial.println(")");
 
-  bool apFound = false;
-  for (int i = 0; i < n; i++) {
-    Serial.print("  ");
-    Serial.print(i);
-    Serial.print(": ");
-    Serial.print(WiFi.SSID(i));
-    Serial.print(" (Ch ");
-    Serial.print(WiFi.channel(i));
-    Serial.print(", RSSI ");
-    Serial.print(WiFi.RSSI(i));
-    Serial.println(")");
-
-    if (WiFi.SSID(i) == String(notify.ssid)) {
-      apFound = true;
-      Serial.println("  ^^ TARGET AP FOUND!");
-    }
-  }
-
-  if (!apFound) {
-    Serial.println("OTA: ERROR - Target AP not found in scan!");
-  }
+	    if (WiFi.SSID(i) == String(notify.ssid)) {
+	      apFound = true;
+	      Serial.println("  ^^ TARGET AP FOUND!");
+	    }
+	  }
+	  if (!apFound) {
+	    Serial.println("OTA: WARNING - Target AP not found in scan!");
+	  }
+	} else {
+	  Serial.println("OTA: WARNING - scanNetworks failed; continuing anyway");
+	}
 
   Serial.println("OTA: Starting WiFi connection...");
   Serial.flush();
@@ -1196,6 +1206,24 @@ void loop() {
   if (otaInProgress) {
     delay(10);
     return;
+  }
+
+  // ---- Start OTA if requested (must NOT run from ESP-NOW receive callback) ----
+  if (otaRequestPending) {
+    OTANotifyPacket notify;
+    bool start = false;
+    portENTER_CRITICAL(&otaRequestMux);
+    if (otaRequestPending) {
+      notify = otaPendingNotify;
+      otaRequestPending = false;
+      start = true;
+    }
+    portEXIT_CRITICAL(&otaRequestMux);
+
+    if (start) {
+      performOTAUpdate(notify);
+      return;
+    }
   }
 
   // ---- ESP-NOW Timeout Check ----
