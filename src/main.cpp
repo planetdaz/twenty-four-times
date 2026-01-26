@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 10
+#define FIRMWARE_VERSION_MINOR 15
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -442,8 +442,12 @@ uint16_t blendColor(uint16_t bgColor, uint16_t fgColor, uint8_t opacity) {
   return (outR << 11) | (outG << 5) | outB;
 }
 
-// ---- Identify Mode State ----
-bool identifyMode = false;  // If true, show pixel ID on screen
+// ---- Version Mode State ----
+bool versionMode = false;  // If true, show version info on screen
+
+// ---- Highlight Mode State ----
+bool highlightMode = false;  // If true, show highlight state on screen
+HighlightState currentHighlightState = HIGHLIGHT_IDLE;
 
 // ---- ESP-NOW Packet Handler ----
 
@@ -470,8 +474,9 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
         break;
       }
 
-      // Exit identify mode when we receive a new command
-      identifyMode = false;
+      // Exit version/highlight mode when we receive a new command
+      versionMode = false;
+      highlightMode = false;
 
       // Extract angles for this pixel
       float target1, target2, target3;
@@ -586,19 +591,6 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       break;
     }
 
-    // TODO: CMD_IDENTIFY is currently unused - master uses CMD_HIGHLIGHT instead.
-    //       Either integrate into provisioning UI or remove.
-    case CMD_IDENTIFY: {
-      const IdentifyPacket& cmd = packet->identify;
-      // Check if this command is for us (or for all pixels)
-      if (cmd.pixelId == pixelId || cmd.pixelId == 255) {
-        identifyMode = true;
-        Serial.print("ESP-NOW: Identify mode activated for pixel ");
-        Serial.println(pixelId);
-      }
-      break;
-    }
-
     case CMD_PING:
       Serial.println("ESP-NOW: Ping received");
       break;
@@ -651,6 +643,9 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
 
     case CMD_DISCOVERY: {
       const DiscoveryCommandPacket& cmd = packet->discovery;
+
+      // Exit version mode when entering provision mode
+      versionMode = false;
 
       // Get this device's MAC address
       uint8_t myMac[6];
@@ -710,44 +705,9 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
         Serial.print("ESP-NOW: Highlight state ");
         Serial.println(cmd.state);
 
-        switch (cmd.state) {
-          case HIGHLIGHT_IDLE:
-            // Green bg, white "?"
-            canvas->fillScreen(0x07E0);  // Green
-            canvas->setTextColor(GC9A01A_WHITE);
-            canvas->setTextSize(15);
-            canvas->setCursor(85, 90);
-            canvas->print("?");
-            break;
-
-          case HIGHLIGHT_SELECTED:
-            // Blue border, black bg, yellow "?"
-            canvas->fillScreen(GC9A01A_BLACK);
-            // Draw blue border (thick circle outline)
-            for (int r = 115; r < 120; r++) {
-              canvas->drawCircle(CENTER_X, CENTER_Y, r, 0x001F);  // Blue
-            }
-            canvas->setTextColor(0xFFE0);  // Yellow
-            canvas->setTextSize(15);
-            canvas->setCursor(85, 90);
-            canvas->print("?");
-            break;
-
-          case HIGHLIGHT_ASSIGNED:
-            // Green checkmark on black bg
-            canvas->fillScreen(GC9A01A_BLACK);
-            canvas->setTextColor(0x07E0);  // Green
-            canvas->setTextSize(12);
-            canvas->setCursor(70, 80);
-            canvas->print("OK");  // Simple "OK" instead of checkmark symbol
-            // Also show the assigned ID below
-            canvas->setTextSize(6);
-            canvas->setCursor(pixelId < 10 ? 100 : 85, 150);
-            canvas->print(pixelId);
-            break;
-        }
-
-        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        // Enter highlight mode and store the state
+        highlightMode = true;
+        currentHighlightState = cmd.state;
       }
       break;
     }
@@ -792,18 +752,9 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
 
       // Display version on screen if requested
       if (cmd.displayOnScreen) {
-        canvas->fillScreen(GC9A01A_MAGENTA);
-        canvas->setTextColor(GC9A01A_WHITE);
-        canvas->setTextSize(3);
-        canvas->setCursor(60, 80);
-        canvas->print("Pixel ");
-        canvas->println(pixelId);
-        canvas->setCursor(80, 130);
-        canvas->print("v");
-        canvas->print(FIRMWARE_VERSION_MAJOR);
-        canvas->print(".");
-        canvas->println(FIRMWARE_VERSION_MINOR);
-        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        versionMode = true;  // Enter version mode to persist display
+        Serial.print("ESP-NOW: Version mode activated for pixel ");
+        Serial.println(pixelId);
       }
       break;
     }
@@ -1261,21 +1212,99 @@ void loop() {
     return;
   }
 
-  // ---- Identify Mode Display ----
-  // If in identify mode, show pixel ID and skip normal rendering
-  if (identifyMode) {
-    canvas->fillScreen(GC9A01A_BLUE);
-
-    // Draw large pixel ID in the center
+  // ---- Version Mode Display ----
+  // If in version mode, show version info and skip normal rendering
+  if (versionMode) {
+    canvas->fillScreen(GC9A01A_MAGENTA);
     canvas->setTextColor(GC9A01A_WHITE);
-    canvas->setTextSize(15);  // Very large text
+    canvas->setTextSize(3);
+    canvas->setCursor(60, 80);
+    canvas->print("Pixel ");
+    canvas->println(pixelId);
+    canvas->setCursor(80, 130);
+    canvas->print("v");
+    canvas->print(FIRMWARE_VERSION_MAJOR);
+    canvas->print(".");
+    canvas->println(FIRMWARE_VERSION_MINOR);
 
-    // Center the text (approximate positioning for single/double digit)
-    int xPos = (pixelId < 10) ? 85 : 55;
-    canvas->setCursor(xPos, 90);
-    canvas->print(pixelId);
+    // Present version frame to display
+    tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
-    // Present identify frame to display
+    // Small delay and return (skip normal rendering)
+    delay(100);
+    return;
+  }
+
+  // ---- Highlight Mode Display ----
+  // If in highlight mode, show highlight state and skip normal rendering
+  if (highlightMode) {
+    // Get MAC address for display
+    uint8_t myMac[6];
+    WiFi.macAddress(myMac);
+    char macStr[18];
+    sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
+            myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5]);
+
+    switch (currentHighlightState) {
+      case HIGHLIGHT_IDLE:
+        // Blue border, black bg, show MAC and current ID
+        canvas->fillScreen(GC9A01A_BLACK);
+        // Draw blue border (thick circle outline)
+        for (int r = 115; r < 120; r++) {
+          canvas->drawCircle(CENTER_X, CENTER_Y, r, 0x001F);  // Blue
+        }
+        canvas->setTextColor(GC9A01A_WHITE);
+        canvas->setTextSize(2);
+        canvas->setCursor(20, 60);
+        canvas->print("MAC:");
+        canvas->setCursor(10, 85);
+        canvas->print(macStr);
+        canvas->setCursor(50, 130);
+        canvas->print("ID: ");
+        if (pixelId == PIXEL_ID_UNPROVISIONED) {
+          canvas->print("?");
+        } else {
+          canvas->print(pixelId);
+        }
+        break;
+
+      case HIGHLIGHT_SELECTED:
+        // Bright green bg with black text, show MAC and current ID
+        canvas->fillScreen(0x07E0);  // Green
+        canvas->setTextColor(GC9A01A_BLACK);
+        canvas->setTextSize(2);
+        canvas->setCursor(20, 60);
+        canvas->print("MAC:");
+        canvas->setCursor(10, 85);
+        canvas->print(macStr);
+        canvas->setCursor(50, 130);
+        canvas->print("ID: ");
+        if (pixelId == PIXEL_ID_UNPROVISIONED) {
+          canvas->print("?");
+        } else {
+          canvas->print(pixelId);
+        }
+        break;
+
+      case HIGHLIGHT_ASSIGNED:
+        // Black bg, show OK and assigned ID
+        canvas->fillScreen(GC9A01A_BLACK);
+        canvas->setTextColor(0x07E0);  // Green
+        canvas->setTextSize(4);
+        canvas->setCursor(80, 60);
+        canvas->print("OK");
+        canvas->setTextSize(2);
+        canvas->setCursor(20, 110);
+        canvas->print("MAC:");
+        canvas->setCursor(10, 135);
+        canvas->print(macStr);
+        canvas->setCursor(40, 180);
+        canvas->print("ID: ");
+        canvas->print(pixelId);
+        break;
+    }
+
+    // Present highlight frame to display
     tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
     // Small delay and return (skip normal rendering)

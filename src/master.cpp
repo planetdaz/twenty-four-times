@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 10
+#define FIRMWARE_VERSION_MINOR 15
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -73,7 +73,6 @@ enum ControlMode {
   MODE_SIMULATION,  // Random patterns like the simulation
   MODE_DIGITS,      // Display digits 0-9 with animations
   MODE_PROVISION,   // Discovery and provisioning of pixels
-  MODE_MANUAL,      // Manual control (future)
   MODE_OTA,         // OTA firmware update for pixels
   MODE_VERSION      // Display firmware versions
 };
@@ -103,18 +102,7 @@ unsigned long lastPingTime = 0;
 unsigned long modeStartTime = 0;
 const unsigned long SIMULATION_INTERVAL = 5000;  // 5 seconds between random patterns
 const unsigned long IDENTIFY_DURATION = 5000;    // Identify phase duration
-const unsigned long PING_INTERVAL = 5000;        // 5 seconds between pings in manual mode
-
-// Manual mode state
-struct ManualState {
-  uint8_t selectedPixel = 0;     // Currently selected pixel (0-23)
-  float angles[3] = {0, 0, 0};   // Angles for the 3 hands
-  RotationDirection directions[3] = {DIR_CW, DIR_CW, DIR_CW};  // Direction for each hand
-  uint8_t colorIndex = 0;        // Color palette index
-  uint8_t opacity = 255;         // Opacity (0-255)
-  TransitionType transition = TRANSITION_LINEAR;
-  float duration = 2.0;          // Duration in seconds
-} manualState;
+const unsigned long PING_INTERVAL = 5000;        // 5 seconds between pings
 
 // Touch state
 uint16_t touchX = 0, touchY = 0;
@@ -255,10 +243,13 @@ uint8_t autoCycleNumber = 0;        // Current number (0-99)
 bool autoCycleDirection = true;     // true = 0->99, false = 99->0
 unsigned long lastAutoCycleTime = 0;
 
+// Manual digit entry variables
+uint8_t pendingDigits[2] = {255, 255};  // 255 = not set, 0-9 = digit, 10 = colon, 11 = space
+uint8_t pendingCount = 0;               // How many digits entered (0, 1, or 2)
+uint8_t lastSentLeft = 11;              // Last sent left digit (11 = space)
+uint8_t lastSentRight = 11;             // Last sent right digit (11 = space)
+
 // ===== FUNCTION DECLARATIONS =====
-void drawManualScreen();
-void handleManualTouch(uint16_t x, uint16_t y);
-void sendManualCommand(bool allPixels);
 void sendPing();
 void drawDigitsScreen();
 void handleDigitsTouch(uint16_t x, uint16_t y);
@@ -396,22 +387,15 @@ void drawMenu() {
   tft.setCursor(25, 195);
   tft.println("Discover & assign");
 
-  // Button 4: Manual (bottom right - make room for OTA)
-  tft.fillRoundRect(170, 160, 65, 60, 8, TFT_ORANGE);
-  tft.setTextColor(TFT_WHITE, TFT_ORANGE);
-  tft.setTextSize(1);
-  tft.setCursor(178, 180);
-  tft.println("Manual");
-
-  // Button 5: OTA Update (far bottom right)
-  tft.fillRoundRect(245, 160, 65, 60, 8, TFT_CYAN);
+  // Button 4: OTA Update (bottom right - expanded)
+  tft.fillRoundRect(170, 160, 140, 60, 8, TFT_CYAN);
   tft.setTextColor(TFT_BLACK, TFT_CYAN);
   tft.setTextSize(2);
-  tft.setCursor(262, 175);
+  tft.setCursor(207, 175);
   tft.println("OTA");
   tft.setTextSize(1);
-  tft.setCursor(252, 200);
-  tft.println("Update");
+  tft.setCursor(180, 200);
+  tft.println("Firmware Update");
 
   // Version button (small, top right corner)
   tft.fillRoundRect(270, 5, 45, 25, 4, TFT_DARKGREY);
@@ -442,12 +426,8 @@ ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
   if (x >= 10 && x <= 160 && y >= 160 && y <= 220) {
     return MODE_PROVISION;
   }
-  // Button 4: Manual (170, 160, 65, 60)
-  if (x >= 170 && x <= 235 && y >= 160 && y <= 220) {
-    return MODE_MANUAL;
-  }
-  // Button 5: OTA (245, 160, 65, 60)
-  if (x >= 245 && x <= 310 && y >= 160 && y <= 220) {
+  // Button 4: OTA (170, 160, 140, 60)
+  if (x >= 170 && x <= 310 && y >= 160 && y <= 220) {
     return MODE_OTA;
   }
 
@@ -704,13 +684,27 @@ void drawProvisionScreen() {
       tft.println(discoveredIds[selectedMacIndex]);
     }
 
-    // Show next ID to assign
+    // Show next ID to assign with +/- buttons
     tft.setTextColor(TFT_CYAN, COLOR_BG);
     tft.setTextSize(2);
     tft.setCursor(10, 95);
-    tft.print("Assign ID: ");
+    tft.print("Assign ID:");
+
+    // +/- buttons for adjusting ID
+    tft.fillRoundRect(130, 92, 30, 25, 4, TFT_DARKGREY);
+    tft.fillRoundRect(165, 92, 30, 25, 4, TFT_DARKGREY);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setTextSize(2);
+    tft.setCursor(140, 97);
+    tft.print("-");
+    tft.setCursor(175, 97);
+    tft.print("+");
+
+    // Display ID after buttons
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
     tft.setTextSize(3);
-    tft.println(nextIdToAssign);
+    tft.setCursor(210, 92);
+    tft.print(nextIdToAssign);
 
     // Prev/Next buttons
     tft.fillRoundRect(10, 140, 60, 35, 4, TFT_DARKBLUE);
@@ -723,17 +717,11 @@ void drawProvisionScreen() {
     tft.setCursor(90, 148);
     tft.println("Next");
 
-    // Assign button
-    tft.fillRoundRect(160, 140, 70, 35, 4, TFT_DARKGREEN);
+    // Assign button (expanded to fill the space)
+    tft.fillRoundRect(160, 140, 150, 35, 4, TFT_DARKGREEN);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-    tft.setCursor(165, 148);
+    tft.setCursor(205, 148);
     tft.println("Assign");
-
-    // Skip button
-    tft.fillRoundRect(240, 140, 70, 35, 4, TFT_ORANGE);
-    tft.setTextColor(TFT_WHITE, TFT_ORANGE);
-    tft.setCursor(255, 148);
-    tft.println("Skip");
 
     // Back button
     tft.fillRoundRect(10, 190, 80, 35, 4, TFT_DARKGREY);
@@ -790,6 +778,24 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
     }
 
   } else if (provisionPhase == PHASE_ASSIGNING) {
+    // ID decrement button (130, 92, 30, 25)
+    if (x >= 130 && x <= 160 && y >= 92 && y <= 117) {
+      if (nextIdToAssign > 0) {
+        nextIdToAssign--;
+        drawProvisionScreen();
+      }
+      return;
+    }
+
+    // ID increment button (165, 92, 30, 25)
+    if (x >= 165 && x <= 195 && y >= 92 && y <= 117) {
+      if (nextIdToAssign < 23) {
+        nextIdToAssign++;
+        drawProvisionScreen();
+      }
+      return;
+    }
+
     // Prev button (10, 140, 60, 35)
     if (x >= 10 && x <= 70 && y >= 140 && y <= 175) {
       // Un-highlight current
@@ -818,8 +824,8 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
       return;
     }
 
-    // Assign button (160, 140, 70, 35)
-    if (x >= 160 && x <= 230 && y >= 140 && y <= 175) {
+    // Assign button (160, 140, 150, 35)
+    if (x >= 160 && x <= 310 && y >= 140 && y <= 175) {
       // Assign the ID
       sendAssignIdCommand(discoveredMacs[selectedMacIndex], nextIdToAssign);
       // Update local state
@@ -833,18 +839,6 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
         selectedMacIndex++;
         sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
       }
-      drawProvisionScreen();
-      return;
-    }
-
-    // Skip button (240, 140, 70, 35)
-    if (x >= 240 && x <= 310 && y >= 140 && y <= 175) {
-      // Un-highlight current
-      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
-      // Move to next without assigning
-      selectedMacIndex = (selectedMacIndex + 1) % discoveredCount;
-      // Highlight new selection
-      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
       drawProvisionScreen();
       return;
     }
@@ -882,10 +876,55 @@ void drawDigitsScreen() {
   tft.drawString("Digits Mode", 160, 5);
   tft.setTextDatum(TL_DATUM);
 
-  tft.setTextSize(1);
+  // Show pending digit entry and last sent
+  tft.setTextSize(2);
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(70, 25);
-  tft.println("Touch a digit to display:");
+  tft.setCursor(10, 28);
+  tft.print("Number: ");
+
+  // Show pending first digit (or underscore)
+  if (pendingCount == 0) {
+    tft.print("_");
+  } else if (pendingDigits[0] == 10) {
+    tft.print(":");
+  } else if (pendingDigits[0] == 11) {
+    tft.print(" ");
+  } else {
+    tft.print(pendingDigits[0]);
+  }
+
+  tft.print(" ");
+
+  // Show pending second digit (or underscore)
+  if (pendingCount < 2) {
+    tft.print("_");
+  } else if (pendingDigits[1] == 10) {
+    tft.print(":");
+  } else if (pendingDigits[1] == 11) {
+    tft.print(" ");
+  } else {
+    tft.print(pendingDigits[1]);
+  }
+
+  // Show last sent number
+  tft.setTextColor(TFT_CYAN, COLOR_BG);
+  tft.setCursor(180, 28);
+  tft.print("Last: ");
+  if (lastSentLeft == 10) {
+    tft.print(":");
+  } else if (lastSentLeft == 11) {
+    tft.print(" ");
+  } else {
+    tft.print(lastSentLeft);
+  }
+  tft.print(" ");
+  if (lastSentRight == 10) {
+    tft.print(":");
+  } else if (lastSentRight == 11) {
+    tft.print(" ");
+  } else {
+    tft.print(lastSentRight);
+  }
 
   // Draw number buttons in a 2x5 grid
   // Top row: 0-4
@@ -997,23 +1036,42 @@ void drawDigitsScreen() {
 }
 
 void handleDigitsTouch(uint16_t x, uint16_t y) {
-  // Check digit buttons (0-4, top row) - shows as "X " (digit left, space right)
+  // Helper function to add a digit and maybe send
+  auto addDigit = [](uint8_t digit) {
+    pendingDigits[pendingCount] = digit;
+    pendingCount++;
+
+    if (pendingCount == 2) {
+      // Send the two-digit pattern
+      sendTwoDigitPattern(pendingDigits[0], pendingDigits[1]);
+      lastSentLeft = pendingDigits[0];
+      lastSentRight = pendingDigits[1];
+      // Reset for next entry
+      pendingDigits[0] = 255;
+      pendingDigits[1] = 255;
+      pendingCount = 0;
+    }
+
+    drawDigitsScreen();
+  };
+
+  // Check digit buttons (0-4, top row)
   if (y >= 45 && y <= 85) {
     for (int i = 0; i <= 4; i++) {
       int buttonX = 10 + i * 60;
       if (x >= buttonX && x <= buttonX + 50) {
-        sendTwoDigitPattern(i, 11);  // digit on left, space on right
+        addDigit(i);
         return;
       }
     }
   }
 
-  // Check digit buttons (5-9, bottom row) - shows as "X " (digit left, space right)
+  // Check digit buttons (5-9, bottom row)
   if (y >= 95 && y <= 135) {
     for (int i = 5; i <= 9; i++) {
       int buttonX = 10 + (i - 5) * 60;
       if (x >= buttonX && x <= buttonX + 50) {
-        sendTwoDigitPattern(i, 11);  // digit on left, space on right
+        addDigit(i);
         return;
       }
     }
@@ -1021,14 +1079,14 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
 
   // Check special character buttons
   if (y >= 145 && y <= 185) {
-    // Colon button - shows ": " (colon left, space right)
+    // Colon button
     if (x >= 10 && x <= 60) {
-      sendTwoDigitPattern(10, 11);  // colon on left, space on right
+      addDigit(10);  // 10 = colon
       return;
     }
-    // Space button - shows "  " (space both)
+    // Space button
     if (x >= 70 && x <= 120) {
-      sendTwoDigitPattern(11, 11);  // space on both
+      addDigit(11);  // 11 = space
       return;
     }
     // Auto-cycle toggle button
@@ -1039,6 +1097,10 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
         autoCycleNumber = 0;
         autoCycleDirection = true;
         lastAutoCycleTime = millis();
+        // Clear any pending manual entry
+        pendingDigits[0] = 255;
+        pendingDigits[1] = 255;
+        pendingCount = 0;
       }
       drawDigitsScreen();
       return;
@@ -1148,306 +1210,6 @@ void sendTwoDigitPattern(uint8_t leftDigit, uint8_t rightDigit) {
     Serial.println("s (targeting 12 pixels only)");
   } else {
     Serial.println("Failed to send two-digit packet!");
-  }
-}
-
-// ===== MANUAL MODE FUNCTIONS =====
-
-void drawManualScreen() {
-  tft.fillScreen(COLOR_BG);
-
-  // Title
-  tft.setTextColor(COLOR_ACCENT, COLOR_BG);
-  tft.setTextSize(2);
-  tft.setTextDatum(TC_DATUM);
-  tft.drawString("Manual Control", 160, 5);
-  tft.setTextDatum(TL_DATUM);
-
-  // Pixel selector
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(5, 30);
-  tft.print("Pixel: ");
-  tft.print(manualState.selectedPixel);
-
-  // Prev/Next buttons for pixel selection
-  tft.fillRoundRect(60, 28, 30, 16, 4, TFT_DARKGREY);
-  tft.fillRoundRect(95, 28, 30, 16, 4, TFT_DARKGREY);
-  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-  tft.setCursor(68, 30);
-  tft.print("<");
-  tft.setCursor(103, 30);
-  tft.print(">");
-
-  // Angle controls (3 rows)
-  const char* handNames[] = {"Hand 1:", "Hand 2:", "Hand 3:"};
-  for (int i = 0; i < 3; i++) {
-    int y = 55 + i * 30;
-    tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setCursor(5, y);
-    tft.print(handNames[i]);
-    tft.setCursor(55, y);
-    tft.printf("%3.0f", manualState.angles[i]);
-    tft.print((char)247);  // Degree symbol
-
-    // -/+ buttons for angle
-    tft.fillRoundRect(100, y - 2, 25, 16, 4, TFT_DARKGREY);
-    tft.fillRoundRect(130, y - 2, 25, 16, 4, TFT_DARKGREY);
-    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-    tft.setCursor(108, y);
-    tft.print("-");
-    tft.setCursor(138, y);
-    tft.print("+");
-
-    // Direction toggle button (CW/CCW)
-    uint16_t dirColor = (manualState.directions[i] == DIR_CW) ? TFT_ORANGE : TFT_PURPLE;
-    tft.fillRoundRect(5, y + 15, 150, 12, 3, dirColor);
-    tft.setTextColor(TFT_WHITE, dirColor);
-    tft.setTextSize(1);
-    tft.setCursor(10, y + 16);
-    tft.print(manualState.directions[i] == DIR_CW ? "Clockwise (CW)" : "Counter-CW (CCW)");
-  }
-
-  // Color selector
-  tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(5, 165);
-  tft.print("Color:");
-  tft.fillRoundRect(50, 163, 30, 16, 4, TFT_DARKGREY);
-  tft.fillRoundRect(85, 163, 30, 16, 4, TFT_DARKGREY);
-  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-  tft.setCursor(58, 165);
-  tft.print("<");
-  tft.setCursor(93, 165);
-  tft.print(">");
-  tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(120, 165);
-  tft.print(manualState.colorIndex);
-
-  // Opacity selector
-  tft.setCursor(5, 185);
-  tft.print("Opacity:");
-  tft.fillRoundRect(60, 183, 30, 16, 4, TFT_DARKGREY);
-  tft.fillRoundRect(95, 183, 30, 16, 4, TFT_DARKGREY);
-  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-  tft.setCursor(68, 185);
-  tft.print("-");
-  tft.setCursor(103, 185);
-  tft.print("+");
-  tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(130, 185);
-  tft.print(manualState.opacity);
-
-  // Duration selector
-  tft.setCursor(5, 205);
-  tft.print("Duration:");
-  tft.fillRoundRect(70, 203, 30, 16, 4, TFT_DARKGREY);
-  tft.fillRoundRect(105, 203, 30, 16, 4, TFT_DARKGREY);
-  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-  tft.setCursor(78, 205);
-  tft.print("-");
-  tft.setCursor(113, 205);
-  tft.print("+");
-  tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(140, 205);
-  tft.printf("%.1fs", manualState.duration);
-
-  // Send button (large, prominent)
-  tft.fillRoundRect(170, 30, 140, 50, 8, TFT_GREEN);
-  tft.setTextColor(TFT_WHITE, TFT_GREEN);
-  tft.setTextSize(2);
-  tft.setCursor(195, 45);
-  tft.println("SEND");
-
-  // All Pixels button
-  tft.fillRoundRect(170, 90, 140, 35, 8, TFT_BLUE);
-  tft.setTextColor(TFT_WHITE, TFT_BLUE);
-  tft.setTextSize(1);
-  tft.setCursor(185, 100);
-  tft.println("Send to ALL Pixels");
-
-  // Reset button
-  tft.fillRoundRect(170, 135, 140, 35, 8, TFT_MAROON);
-  tft.setTextColor(TFT_WHITE, TFT_MAROON);
-  tft.setCursor(200, 145);
-  tft.println("Reset to 0");
-
-  // Back button
-  tft.fillRoundRect(170, 180, 140, 35, 8, TFT_DARKGREY);
-  tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-  tft.setCursor(205, 190);
-  tft.println("< Menu");
-}
-
-void handleManualTouch(uint16_t x, uint16_t y) {
-  bool needsRedraw = false;
-
-  // Pixel prev/next (60, 28, 30, 16) and (95, 28, 30, 16)
-  if (y >= 28 && y <= 44) {
-    if (x >= 60 && x <= 90) {
-      manualState.selectedPixel = (manualState.selectedPixel == 0) ? 23 : manualState.selectedPixel - 1;
-      needsRedraw = true;
-    } else if (x >= 95 && x <= 125) {
-      manualState.selectedPixel = (manualState.selectedPixel + 1) % 24;
-      needsRedraw = true;
-    }
-  }
-
-  // Angle controls (3 rows at y=55, 85, 115)
-  for (int i = 0; i < 3; i++) {
-    int y_base = 55 + i * 30;
-    // Angle +/- buttons
-    if (y >= y_base - 2 && y <= y_base + 14) {
-      // Minus button (100, y-2, 25, 16)
-      if (x >= 100 && x <= 125) {
-        manualState.angles[i] -= 15;
-        if (manualState.angles[i] < 0) manualState.angles[i] += 360;
-        needsRedraw = true;
-      }
-      // Plus button (130, y-2, 25, 16)
-      else if (x >= 130 && x <= 155) {
-        manualState.angles[i] += 15;
-        if (manualState.angles[i] >= 360) manualState.angles[i] -= 360;
-        needsRedraw = true;
-      }
-    }
-    // Direction toggle button (5, y+15, 150, 12)
-    if (y >= y_base + 15 && y <= y_base + 27) {
-      if (x >= 5 && x <= 155) {
-        manualState.directions[i] = (manualState.directions[i] == DIR_CW) ? DIR_CCW : DIR_CW;
-        needsRedraw = true;
-      }
-    }
-  }
-
-  // Color prev/next (50, 163, 30, 16) and (85, 163, 30, 16)
-  if (y >= 163 && y <= 179) {
-    if (x >= 50 && x <= 80) {
-      manualState.colorIndex = (manualState.colorIndex == 0) ? (COLOR_PALETTE_SIZE - 1) : manualState.colorIndex - 1;
-      needsRedraw = true;
-    } else if (x >= 85 && x <= 115) {
-      manualState.colorIndex = (manualState.colorIndex + 1) % COLOR_PALETTE_SIZE;
-      needsRedraw = true;
-    }
-  }
-
-  // Opacity -/+ (60, 183, 30, 16) and (95, 183, 30, 16)
-  if (y >= 183 && y <= 199) {
-    if (x >= 60 && x <= 90) {
-      if (manualState.opacity >= 25) manualState.opacity -= 25;
-      needsRedraw = true;
-    } else if (x >= 95 && x <= 125) {
-      if (manualState.opacity <= 230) manualState.opacity += 25;
-      needsRedraw = true;
-    }
-  }
-
-  // Duration -/+ (70, 203, 30, 16) and (105, 203, 30, 16)
-  if (y >= 203 && y <= 219) {
-    if (x >= 70 && x <= 100) {
-      if (manualState.duration > 0.5) manualState.duration -= 0.5;
-      needsRedraw = true;
-    } else if (x >= 105 && x <= 135) {
-      if (manualState.duration < 10.0) manualState.duration += 0.5;
-      needsRedraw = true;
-    }
-  }
-
-  // SEND button (170, 30, 140, 50)
-  if (x >= 170 && x <= 310 && y >= 30 && y <= 80) {
-    sendManualCommand(false);  // Send to selected pixel only
-    return;
-  }
-
-  // Send to ALL button (170, 90, 140, 35)
-  if (x >= 170 && x <= 310 && y >= 90 && y <= 125) {
-    sendManualCommand(true);  // Send to all pixels
-    return;
-  }
-
-  // Reset button (170, 135, 140, 35)
-  if (x >= 170 && x <= 310 && y >= 135 && y <= 170) {
-    manualState.angles[0] = 0;
-    manualState.angles[1] = 0;
-    manualState.angles[2] = 0;
-    needsRedraw = true;
-  }
-
-  // Back button (170, 180, 140, 35)
-  if (x >= 170 && x <= 310 && y >= 180 && y <= 215) {
-    currentMode = MODE_MENU;
-    drawMenu();
-    return;
-  }
-
-  if (needsRedraw) {
-    drawManualScreen();
-  }
-}
-
-void sendManualCommand(bool allPixels) {
-  ESPNowPacket packet;
-  packet.angleCmd.command = CMD_SET_ANGLES;
-  packet.angleCmd.transition = manualState.transition;
-  packet.angleCmd.duration = floatToDuration(manualState.duration);
-
-  if (allPixels) {
-    // Target all pixels (broadcast mode)
-    packet.angleCmd.clearTargetMask();
-
-    // Send same angles and directions to all pixels (synchronized movement)
-    for (int i = 0; i < MAX_PIXELS; i++) {
-      packet.angleCmd.setPixelAngles(i,
-        manualState.angles[0],
-        manualState.angles[1],
-        manualState.angles[2],
-        manualState.directions[0],
-        manualState.directions[1],
-        manualState.directions[2]);
-      packet.angleCmd.setPixelStyle(i, manualState.colorIndex, manualState.opacity);
-    }
-    Serial.println("Sending manual command to ALL pixels");
-  } else {
-    // Target only the selected pixel - others will ignore the command
-    packet.angleCmd.clearTargetMask();
-    packet.angleCmd.setTargetPixel(manualState.selectedPixel);
-
-    // Only need to set values for the targeted pixel
-    packet.angleCmd.setPixelAngles(manualState.selectedPixel,
-      manualState.angles[0],
-      manualState.angles[1],
-      manualState.angles[2],
-      manualState.directions[0],
-      manualState.directions[1],
-      manualState.directions[2]);
-    packet.angleCmd.setPixelStyle(manualState.selectedPixel, manualState.colorIndex, manualState.opacity);
-
-    Serial.print("Sending manual command to pixel ");
-    Serial.print(manualState.selectedPixel);
-    Serial.println(" (others will continue current animation)");
-  }
-
-  if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {
-    Serial.println("Manual command sent successfully");
-
-    // Brief visual feedback
-    tft.fillRoundRect(170, 30, 140, 50, 8, TFT_DARKGREEN);
-    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-    tft.setTextSize(2);
-    tft.setCursor(200, 45);
-    tft.println("SENT!");
-    delay(200);
-    drawManualScreen();
-  } else {
-    Serial.println("Failed to send manual command");
-
-    // Error feedback
-    tft.fillRoundRect(170, 30, 140, 50, 8, TFT_RED);
-    tft.setTextColor(TFT_WHITE, TFT_RED);
-    tft.setTextSize(2);
-    tft.setCursor(185, 45);
-    tft.println("FAILED!");
-    delay(500);
-    drawManualScreen();
   }
 }
 
@@ -2073,15 +1835,13 @@ void loop() {
             break;
           case MODE_DIGITS:
             drawDigitsScreen();
+            // Send initial pattern to clear any highlight/version modes on pixels
+            sendTwoDigitPattern(11, 11);  // Send blank pattern
             lastPingTime = currentTime;  // Initialize ping timer
             break;
           case MODE_PROVISION:
             provisionPhase = PHASE_IDLE;
             drawProvisionScreen();
-            break;
-          case MODE_MANUAL:
-            drawManualScreen();
-            lastPingTime = currentTime;  // Initialize ping timer
             break;
           case MODE_OTA:
             otaPhase = OTA_IDLE;
@@ -2100,9 +1860,6 @@ void loop() {
             break;
         }
       }
-    } else if (currentMode == MODE_MANUAL) {
-      // Manual mode has its own touch handler
-      handleManualTouch(tx, ty);
     } else if (currentMode == MODE_DIGITS) {
       // Digits mode has its own touch handler
       handleDigitsTouch(tx, ty);
@@ -2156,6 +1913,11 @@ void loop() {
           uint8_t rightDigit = autoCycleNumber % 10;  // Ones digit
           sendTwoDigitPattern(leftDigit, rightDigit);
 
+          // Update last sent display
+          lastSentLeft = leftDigit;
+          lastSentRight = rightDigit;
+          drawDigitsScreen();  // Update display to show new "Last:" value
+
           // Update number for next cycle (bounces 0->99->0)
           if (autoCycleDirection) {
             // Going 0->99
@@ -2190,15 +1952,6 @@ void loop() {
           // Redraw to update count
           drawProvisionScreen();
         }
-      }
-      break;
-    }
-
-    case MODE_MANUAL: {
-      // Send periodic pings to keep pixels alive
-      if (currentTime - lastPingTime >= PING_INTERVAL) {
-        sendPing();
-        lastPingTime = currentTime;
       }
       break;
     }
