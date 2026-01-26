@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 13
+#define FIRMWARE_VERSION_MINOR 14
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -1247,8 +1247,12 @@ void loop() {
 
     switch (currentHighlightState) {
       case HIGHLIGHT_IDLE:
-        // Green bg, show MAC and current ID
-        canvas->fillScreen(0x07E0);  // Green
+        // Blue border, black bg, show MAC and current ID
+        canvas->fillScreen(GC9A01A_BLACK);
+        // Draw blue border (thick circle outline)
+        for (int r = 115; r < 120; r++) {
+          canvas->drawCircle(CENTER_X, CENTER_Y, r, 0x001F);  // Blue
+        }
         canvas->setTextColor(GC9A01A_WHITE);
         canvas->setTextSize(2);
         canvas->setCursor(20, 60);
@@ -1265,22 +1269,15 @@ void loop() {
         break;
 
       case HIGHLIGHT_SELECTED:
-        // Blue border, black bg, show MAC and current ID in yellow
-        canvas->fillScreen(GC9A01A_BLACK);
-        // Draw blue border (thick circle outline)
-        for (int r = 115; r < 120; r++) {
-          canvas->drawCircle(CENTER_X, CENTER_Y, r, 0x001F);  // Blue
-        }
-        canvas->setTextColor(0xFFE0);  // Yellow
+        // Bright green bg with black text, show MAC and current ID
+        canvas->fillScreen(0x07E0);  // Green
+        canvas->setTextColor(GC9A01A_BLACK);
         canvas->setTextSize(2);
-        canvas->setCursor(35, 50);
-        canvas->print("SELECTED");
-        canvas->setTextSize(2);
-        canvas->setCursor(20, 90);
+        canvas->setCursor(20, 60);
         canvas->print("MAC:");
-        canvas->setCursor(10, 115);
+        canvas->setCursor(10, 85);
         canvas->print(macStr);
-        canvas->setCursor(50, 160);
+        canvas->setCursor(50, 130);
         canvas->print("ID: ");
         if (pixelId == PIXEL_ID_UNPROVISIONED) {
           canvas->print("?");

@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 13
+#define FIRMWARE_VERSION_MINOR 14
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -682,19 +682,23 @@ void drawProvisionScreen() {
     tft.setTextColor(TFT_CYAN, COLOR_BG);
     tft.setTextSize(2);
     tft.setCursor(10, 95);
-    tft.print("Assign ID: ");
-    tft.setTextSize(3);
-    tft.print(nextIdToAssign);
+    tft.print("Assign ID:");
 
     // +/- buttons for adjusting ID
-    tft.fillRoundRect(145, 92, 30, 25, 4, TFT_DARKGREY);
-    tft.fillRoundRect(180, 92, 30, 25, 4, TFT_DARKGREY);
+    tft.fillRoundRect(130, 92, 30, 25, 4, TFT_DARKGREY);
+    tft.fillRoundRect(165, 92, 30, 25, 4, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
     tft.setTextSize(2);
-    tft.setCursor(155, 97);
+    tft.setCursor(140, 97);
     tft.print("-");
-    tft.setCursor(190, 97);
+    tft.setCursor(175, 97);
     tft.print("+");
+
+    // Display ID after buttons
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
+    tft.setTextSize(3);
+    tft.setCursor(210, 92);
+    tft.print(nextIdToAssign);
 
     // Prev/Next buttons
     tft.fillRoundRect(10, 140, 60, 35, 4, TFT_DARKBLUE);
@@ -768,8 +772,8 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
     }
 
   } else if (provisionPhase == PHASE_ASSIGNING) {
-    // ID decrement button (145, 92, 30, 25)
-    if (x >= 145 && x <= 175 && y >= 92 && y <= 117) {
+    // ID decrement button (130, 92, 30, 25)
+    if (x >= 130 && x <= 160 && y >= 92 && y <= 117) {
       if (nextIdToAssign > 0) {
         nextIdToAssign--;
         drawProvisionScreen();
@@ -777,8 +781,8 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
       return;
     }
 
-    // ID increment button (180, 92, 30, 25)
-    if (x >= 180 && x <= 210 && y >= 92 && y <= 117) {
+    // ID increment button (165, 92, 30, 25)
+    if (x >= 165 && x <= 195 && y >= 92 && y <= 117) {
       if (nextIdToAssign < 23) {
         nextIdToAssign++;
         drawProvisionScreen();
@@ -1757,6 +1761,8 @@ void loop() {
             break;
           case MODE_DIGITS:
             drawDigitsScreen();
+            // Send initial pattern to clear any highlight/version modes on pixels
+            sendTwoDigitPattern(11, 11);  // Send blank pattern
             lastPingTime = currentTime;  // Initialize ping timer
             break;
           case MODE_PROVISION:
