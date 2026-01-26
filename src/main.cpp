@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 10
+#define FIRMWARE_VERSION_MINOR 11
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -445,6 +445,9 @@ uint16_t blendColor(uint16_t bgColor, uint16_t fgColor, uint8_t opacity) {
 // ---- Identify Mode State ----
 bool identifyMode = false;  // If true, show pixel ID on screen
 
+// ---- Version Mode State ----
+bool versionMode = false;  // If true, show version info on screen
+
 // ---- ESP-NOW Packet Handler ----
 
 // Called when an ESP-NOW packet is received
@@ -470,8 +473,9 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
         break;
       }
 
-      // Exit identify mode when we receive a new command
+      // Exit identify/version mode when we receive a new command
       identifyMode = false;
+      versionMode = false;
 
       // Extract angles for this pixel
       float target1, target2, target3;
@@ -792,18 +796,9 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
 
       // Display version on screen if requested
       if (cmd.displayOnScreen) {
-        canvas->fillScreen(GC9A01A_MAGENTA);
-        canvas->setTextColor(GC9A01A_WHITE);
-        canvas->setTextSize(3);
-        canvas->setCursor(60, 80);
-        canvas->print("Pixel ");
-        canvas->println(pixelId);
-        canvas->setCursor(80, 130);
-        canvas->print("v");
-        canvas->print(FIRMWARE_VERSION_MAJOR);
-        canvas->print(".");
-        canvas->println(FIRMWARE_VERSION_MINOR);
-        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        versionMode = true;  // Enter version mode to persist display
+        Serial.print("ESP-NOW: Version mode activated for pixel ");
+        Serial.println(pixelId);
       }
       break;
     }
@@ -1276,6 +1271,29 @@ void loop() {
     canvas->print(pixelId);
 
     // Present identify frame to display
+    tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    // Small delay and return (skip normal rendering)
+    delay(100);
+    return;
+  }
+
+  // ---- Version Mode Display ----
+  // If in version mode, show version info and skip normal rendering
+  if (versionMode) {
+    canvas->fillScreen(GC9A01A_MAGENTA);
+    canvas->setTextColor(GC9A01A_WHITE);
+    canvas->setTextSize(3);
+    canvas->setCursor(60, 80);
+    canvas->print("Pixel ");
+    canvas->println(pixelId);
+    canvas->setCursor(80, 130);
+    canvas->print("v");
+    canvas->print(FIRMWARE_VERSION_MAJOR);
+    canvas->print(".");
+    canvas->println(FIRMWARE_VERSION_MINOR);
+
+    // Present version frame to display
     tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
     // Small delay and return (skip normal rendering)
