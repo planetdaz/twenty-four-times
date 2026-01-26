@@ -3,15 +3,32 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_GC9A01A.h>
 #include <ESPNowComm.h>
+#include <Preferences.h>
+#include <HTTPUpdate.h>
+#include <WiFiClient.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 
 // Proof of concept: Three rotating clock hands on a 240x240 circular display
 // Based on the twenty-four-times simulation
 // Now with ESP-NOW communication for synchronized multi-pixel operation
 
+// ===== FIRMWARE VERSION =====
+#define FIRMWARE_VERSION_MAJOR 1
+#define FIRMWARE_VERSION_MINOR 5
+
 // ===== PIXEL CONFIGURATION =====
-// This pixel's ID (0-23). In production, this would be stored in NVS.
-// For now, we'll set it via serial command or hardcode different values per device.
-#define PIXEL_ID 2  // Change this for each device (0, 1, 2, etc.)
+// Pixel ID is loaded from NVS (non-volatile storage) on startup.
+// Use CMD_SET_PIXEL_ID command from master to provision each pixel.
+// Value of 255 (PIXEL_ID_UNPROVISIONED) indicates unprovisionied state.
+
+// NVS storage
+Preferences preferences;
+const char* NVS_NAMESPACE = "pixel";
+const char* NVS_KEY_PIXEL_ID = "id";
+
+// Pixel ID (loaded from NVS in setup, or PIXEL_ID_UNPROVISIONED if not set)
+uint8_t pixelId = PIXEL_ID_UNPROVISIONED;
 
 // 240x240 RGB565 buffer (~115 KB) - allocated in setup() to avoid boot crash
 GFXcanvas16* canvas = nullptr;
@@ -126,6 +143,22 @@ bool espnowEnabled = false;  // Set to true when ESP-NOW is initialized
 bool errorState = false;     // If true, display error screen (red bg with "!")
 unsigned long lastPacketTime = 0;
 const unsigned long PACKET_TIMEOUT = 10000;  // 10 seconds without packet = show error
+
+// ===== OTA UPDATE STATE =====
+bool otaInProgress = false;        // True when performing OTA update
+OTAStatus currentOTAStatus = OTA_STATUS_IDLE;
+uint8_t currentOTAProgress = 0;    // 0-100
+
+// OTA requests are received via ESP-NOW callback (WiFi task context).
+// IMPORTANT: Do NOT run WiFi.mode()/scan/begin/update inside the receive callback.
+// Instead, latch the request and perform OTA from loop() context.
+static portMUX_TYPE otaRequestMux = portMUX_INITIALIZER_UNLOCKED;
+volatile bool otaRequestPending = false;
+OTAStartPacket otaPendingStart;  // Changed from OTANotifyPacket to OTAStartPacket
+
+// Forward declarations for OTA
+void sendOTAAck(OTAStatus status, uint8_t progress, uint16_t errorCode = 0);
+void performOTAUpdate(const OTAStartPacket& start);
 
 // FPS tracking
 unsigned long fpsLastTime = 0;
@@ -429,20 +462,28 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
     case CMD_SET_ANGLES: {
       const AngleCommandPacket& cmd = packet->angleCmd;
 
+      // Check if this pixel is targeted by this command
+      if (!cmd.isPixelTargeted(pixelId)) {
+        Serial.print("ESP-NOW: Pixel ");
+        Serial.print(pixelId);
+        Serial.println(" not targeted, ignoring command");
+        break;
+      }
+
       // Exit identify mode when we receive a new command
       identifyMode = false;
 
       // Extract angles for this pixel
       float target1, target2, target3;
-      cmd.getPixelAngles(PIXEL_ID, target1, target2, target3);
+      cmd.getPixelAngles(pixelId, target1, target2, target3);
 
       // Extract directions for this pixel
       RotationDirection dir1, dir2, dir3;
-      cmd.getPixelDirections(PIXEL_ID, dir1, dir2, dir3);
+      cmd.getPixelDirections(pixelId, dir1, dir2, dir3);
 
       // Extract color and opacity for this pixel
-      uint8_t colorIndex = cmd.colorIndices[PIXEL_ID];
-      uint8_t targetOpacity = cmd.opacities[PIXEL_ID];
+      uint8_t colorIndex = cmd.colorIndices[pixelId];
+      uint8_t targetOpacity = cmd.opacities[pixelId];
 
       // Get transition type directly (no mapping needed - they're the same now!)
       TransitionType easing = cmd.transition;
@@ -497,7 +538,7 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
 
       // Debug output
       Serial.print("Pixel ");
-      Serial.print(PIXEL_ID);
+      Serial.print(pixelId);
       Serial.print(": Targets=(");
       Serial.print(target1, 0);
       Serial.print(",");
@@ -545,13 +586,15 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       break;
     }
 
+    // TODO: CMD_IDENTIFY is currently unused - master uses CMD_HIGHLIGHT instead.
+    //       Either integrate into provisioning UI or remove.
     case CMD_IDENTIFY: {
       const IdentifyPacket& cmd = packet->identify;
       // Check if this command is for us (or for all pixels)
-      if (cmd.pixelId == PIXEL_ID || cmd.pixelId == 255) {
+      if (cmd.pixelId == pixelId || cmd.pixelId == 255) {
         identifyMode = true;
         Serial.print("ESP-NOW: Identify mode activated for pixel ");
-        Serial.println(PIXEL_ID);
+        Serial.println(pixelId);
       }
       break;
     }
@@ -565,10 +608,426 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       // Could reset to default state here
       break;
 
+    case CMD_SET_PIXEL_ID: {
+      const SetPixelIdPacket& cmd = packet->setPixelId;
+
+      // Get this device's MAC address
+      uint8_t myMac[6];
+      WiFi.macAddress(myMac);
+
+      // Check if this command is for us (MAC match or broadcast)
+      bool isBroadcast = (cmd.targetMac[0] == 0xFF && cmd.targetMac[1] == 0xFF &&
+                          cmd.targetMac[2] == 0xFF && cmd.targetMac[3] == 0xFF &&
+                          cmd.targetMac[4] == 0xFF && cmd.targetMac[5] == 0xFF);
+      bool macMatches = (memcmp(cmd.targetMac, myMac, 6) == 0);
+
+      if (isBroadcast || macMatches) {
+        // Store the new pixel ID in NVS
+        preferences.begin(NVS_NAMESPACE, false);  // Read-write mode
+        preferences.putUChar(NVS_KEY_PIXEL_ID, cmd.pixelId);
+        preferences.end();
+
+        // Update runtime variable
+        uint8_t oldId = pixelId;
+        pixelId = cmd.pixelId;
+
+        Serial.print("ESP-NOW: Pixel ID assigned: ");
+        Serial.print(oldId);
+        Serial.print(" -> ");
+        Serial.println(pixelId);
+        Serial.println("ID stored in NVS (persists across reboots)");
+
+        // Show visual confirmation - briefly flash green
+        canvas->fillScreen(0x07E0);  // Green
+        canvas->setTextColor(0x0000);  // Black text
+        canvas->setTextSize(8);
+        canvas->setCursor(pixelId < 10 ? 95 : 65, 85);
+        canvas->print(pixelId);
+        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        delay(500);
+      }
+      break;
+    }
+
+    case CMD_DISCOVERY: {
+      const DiscoveryCommandPacket& cmd = packet->discovery;
+
+      // Get this device's MAC address
+      uint8_t myMac[6];
+      WiFi.macAddress(myMac);
+
+      // Check if we're in the exclude list
+      bool excluded = false;
+      for (uint8_t i = 0; i < cmd.excludeCount && i < 20; i++) {
+        if (memcmp(cmd.excludeMacs[i], myMac, 6) == 0) {
+          excluded = true;
+          break;
+        }
+      }
+
+      if (!excluded) {
+        // Show red background while responding (visual feedback)
+        canvas->fillScreen(0xF800);  // Red
+        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+        // Random delay (0-2000ms) to avoid packet collisions
+        uint16_t delayMs = random(2000);
+        Serial.print("ESP-NOW: Discovery received, responding in ");
+        Serial.print(delayMs);
+        Serial.println("ms");
+        delay(delayMs);
+
+        // Send response with our MAC and current ID
+        ESPNowPacket response;
+        response.discoveryResponse.command = CMD_DISCOVERY;
+        memcpy(response.discoveryResponse.mac, myMac, 6);
+        response.discoveryResponse.currentId = pixelId;
+
+        if (ESPNowComm::sendPacket(&response, sizeof(DiscoveryResponsePacket))) {
+          Serial.println("ESP-NOW: Discovery response sent");
+        } else {
+          Serial.println("ESP-NOW: Discovery response FAILED");
+        }
+
+        // Show green to indicate we responded
+        canvas->fillScreen(0x07E0);  // Green
+        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+      } else {
+        Serial.println("ESP-NOW: Discovery received but we're excluded");
+      }
+      break;
+    }
+
+    case CMD_HIGHLIGHT: {
+      const HighlightPacket& cmd = packet->highlight;
+
+      // Get this device's MAC address
+      uint8_t myMac[6];
+      WiFi.macAddress(myMac);
+
+      // Check if this command is for us
+      if (memcmp(cmd.targetMac, myMac, 6) == 0) {
+        Serial.print("ESP-NOW: Highlight state ");
+        Serial.println(cmd.state);
+
+        switch (cmd.state) {
+          case HIGHLIGHT_IDLE:
+            // Green bg, white "?"
+            canvas->fillScreen(0x07E0);  // Green
+            canvas->setTextColor(GC9A01A_WHITE);
+            canvas->setTextSize(15);
+            canvas->setCursor(85, 90);
+            canvas->print("?");
+            break;
+
+          case HIGHLIGHT_SELECTED:
+            // Blue border, black bg, yellow "?"
+            canvas->fillScreen(GC9A01A_BLACK);
+            // Draw blue border (thick circle outline)
+            for (int r = 115; r < 120; r++) {
+              canvas->drawCircle(CENTER_X, CENTER_Y, r, 0x001F);  // Blue
+            }
+            canvas->setTextColor(0xFFE0);  // Yellow
+            canvas->setTextSize(15);
+            canvas->setCursor(85, 90);
+            canvas->print("?");
+            break;
+
+          case HIGHLIGHT_ASSIGNED:
+            // Green checkmark on black bg
+            canvas->fillScreen(GC9A01A_BLACK);
+            canvas->setTextColor(0x07E0);  // Green
+            canvas->setTextSize(12);
+            canvas->setCursor(70, 80);
+            canvas->print("OK");  // Simple "OK" instead of checkmark symbol
+            // Also show the assigned ID below
+            canvas->setTextSize(6);
+            canvas->setCursor(pixelId < 10 ? 100 : 85, 150);
+            canvas->print(pixelId);
+            break;
+        }
+
+        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+      }
+      break;
+    }
+
+    case CMD_OTA_START: {
+      const OTAStartPacket& start = packet->otaStart;
+
+      // Only respond if this command is for us
+      if (start.targetPixelId != pixelId) {
+        break;  // Ignore - not for this pixel
+      }
+
+      Serial.println("ESP-NOW: OTA START received!");
+      Serial.print("  Target: Pixel ");
+      Serial.println(start.targetPixelId);
+      Serial.print("  SSID: ");
+      Serial.println(start.ssid);
+      Serial.print("  URL: ");
+      Serial.println(start.firmwareUrl);
+      Serial.print("  Size: ");
+      Serial.println(start.firmwareSize);
+
+      // Latch OTA request; perform it later from loop() (safe context)
+      portENTER_CRITICAL(&otaRequestMux);
+      otaPendingStart = start;
+      otaRequestPending = true;
+      portEXIT_CRITICAL(&otaRequestMux);
+      break;
+    }
+
+    case CMD_GET_VERSION: {
+      const GetVersionPacket& cmd = packet->getVersion;
+      Serial.println("ESP-NOW: Get version command received");
+
+      // Send version response back to master
+      ESPNowPacket response;
+      response.versionResponse.command = CMD_VERSION_RESPONSE;
+      response.versionResponse.pixelId = pixelId;
+      response.versionResponse.versionMajor = FIRMWARE_VERSION_MAJOR;
+      response.versionResponse.versionMinor = FIRMWARE_VERSION_MINOR;
+      ESPNowComm::sendPacket(&response, sizeof(VersionResponsePacket));
+
+      // Display version on screen if requested
+      if (cmd.displayOnScreen) {
+        canvas->fillScreen(GC9A01A_MAGENTA);
+        canvas->setTextColor(GC9A01A_WHITE);
+        canvas->setTextSize(3);
+        canvas->setCursor(60, 80);
+        canvas->print("Pixel ");
+        canvas->println(pixelId);
+        canvas->setCursor(80, 130);
+        canvas->print("v");
+        canvas->print(FIRMWARE_VERSION_MAJOR);
+        canvas->print(".");
+        canvas->println(FIRMWARE_VERSION_MINOR);
+        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+      }
+      break;
+    }
+
     default:
       Serial.print("ESP-NOW: Unknown command: ");
       Serial.println(packet->command);
   }
+}
+
+// ===== OTA UPDATE FUNCTIONS =====
+
+// Send OTA status acknowledgment back to master
+void sendOTAAck(OTAStatus status, uint8_t progress, uint16_t errorCode) {
+  ESPNowPacket packet;
+  packet.otaAck.command = CMD_OTA_ACK;
+  packet.otaAck.pixelId = pixelId;
+  packet.otaAck.status = status;
+  packet.otaAck.progress = progress;
+  packet.otaAck.errorCode = errorCode;
+
+  ESPNowComm::sendPacket(&packet, sizeof(OTAAckPacket));
+}
+
+// Display OTA progress on screen
+void displayOTAProgress(const char* status, int progress) {
+  canvas->fillScreen(GC9A01A_BLUE);
+  canvas->setTextColor(GC9A01A_WHITE);
+
+  // Status text
+  canvas->setTextSize(2);
+  canvas->setCursor(30, 80);
+  canvas->print(status);
+
+  // Progress bar background
+  canvas->fillRect(30, 120, 180, 20, GC9A01A_BLACK);
+
+  // Progress bar fill
+  if (progress > 0) {
+    int fillWidth = (180 * progress) / 100;
+    canvas->fillRect(30, 120, fillWidth, 20, GC9A01A_GREEN);
+  }
+
+  // Progress text
+  canvas->setTextSize(2);
+  canvas->setCursor(90, 150);
+  canvas->print(progress);
+  canvas->print("%");
+
+  tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+}
+
+// Perform OTA update - connects to WiFi and downloads firmware
+void performOTAUpdate(const OTAStartPacket& start) {
+  otaInProgress = true;
+  currentOTAStatus = OTA_STATUS_STARTING;
+  sendOTAAck(OTA_STATUS_STARTING, 0);
+
+  displayOTAProgress("Connecting", 0);
+
+  Serial.println("OTA: Connecting to WiFi...");
+  Serial.print("OTA: SSID: ");
+  Serial.println(start.ssid);
+  Serial.print("OTA: URL: ");
+  Serial.println(start.firmwareUrl);
+
+  // Disconnect ESP-NOW temporarily
+  Serial.println("OTA: Deinitializing ESP-NOW...");
+  esp_now_deinit();
+
+	// Reconfigure WiFi in a safe context (we are running from loop(), not callback)
+	// NOTE: Avoid WiFi.mode(WIFI_MODE_NULL) here; it has been observed to hang on ESP32-S3.
+	Serial.println("OTA: Preparing WiFi STA...");
+	WiFi.disconnect(true);
+	delay(200);
+	WiFi.mode(WIFI_STA);
+	delay(200);
+
+	// Scan for the AP first to verify it's visible (best-effort)
+	Serial.println("OTA: Scanning for networks...");
+	int n = WiFi.scanNetworks();
+	Serial.print("OTA: Found ");
+	Serial.print(n);
+	Serial.println(" networks");
+	if (n >= 0) {
+	  bool apFound = false;
+	  for (int i = 0; i < n; i++) {
+	    Serial.print("  ");
+	    Serial.print(i);
+	    Serial.print(": ");
+	    Serial.print(WiFi.SSID(i));
+	    Serial.print(" (Ch ");
+	    Serial.print(WiFi.channel(i));
+	    Serial.print(", RSSI ");
+	    Serial.print(WiFi.RSSI(i));
+	    Serial.println(")");
+
+	    if (WiFi.SSID(i) == String(start.ssid)) {
+	      apFound = true;
+	      Serial.println("  ^^ TARGET AP FOUND!");
+	    }
+	  }
+	  if (!apFound) {
+	    Serial.println("OTA: WARNING - Target AP not found in scan!");
+	  }
+	} else {
+	  Serial.println("OTA: WARNING - scanNetworks failed; continuing anyway");
+	}
+
+  Serial.println("OTA: Starting WiFi connection...");
+  Serial.flush();
+  WiFi.begin(start.ssid, start.password);
+
+  // Wait for connection (timeout after 30 seconds)
+  int timeout = 60;  // 30 seconds (500ms per iteration)
+  while (WiFi.status() != WL_CONNECTED && timeout > 0) {
+    delay(500);
+    Serial.print(".");
+    timeout--;
+    displayOTAProgress("Connecting", (60 - timeout) * 100 / 60);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\nOTA: WiFi connection failed!");
+    Serial.print("OTA: WiFi status: ");
+    Serial.println(WiFi.status());
+    Serial.println("OTA: Status codes: 0=IDLE, 1=NO_SSID, 3=CONNECTED, 4=CONNECT_FAILED, 6=DISCONNECTED");
+    displayOTAProgress("WiFi Failed", 0);
+    currentOTAStatus = OTA_STATUS_ERROR;
+
+    // Restore ESP-NOW
+    delay(2000);
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_STA);
+    ESPNowComm::initReceiver(ESPNOW_CHANNEL);
+    ESPNowComm::setReceiveCallback(onPacketReceived);
+    lastPacketTime = millis();  // Reset timeout to avoid immediate error
+    otaInProgress = false;
+    return;
+  }
+
+  Serial.println("\nOTA: WiFi connected!");
+  Serial.print("OTA: IP address: ");
+  Serial.println(WiFi.localIP());
+
+  currentOTAStatus = OTA_STATUS_DOWNLOADING;
+  sendOTAAck(OTA_STATUS_DOWNLOADING, 0);
+  displayOTAProgress("Downloading", 0);
+
+  // Set up progress callback
+  httpUpdate.onProgress([](int cur, int total) {
+    int progress = (cur * 100) / total;
+    currentOTAProgress = progress;
+    displayOTAProgress("Updating", progress);
+    Serial.printf("OTA Progress: %d%%\n", progress);
+  });
+
+  // Perform the update
+  WiFiClient client;
+  Serial.print("OTA: Downloading from ");
+  Serial.println(start.firmwareUrl);
+
+  t_httpUpdate_return ret = httpUpdate.update(client, start.firmwareUrl);
+
+  switch (ret) {
+    case HTTP_UPDATE_FAILED:
+      Serial.printf("OTA: Update failed! Error (%d): %s\n",
+                    httpUpdate.getLastError(),
+                    httpUpdate.getLastErrorString().c_str());
+      displayOTAProgress("FAILED!", 0);
+      canvas->setTextSize(1);
+      canvas->setCursor(20, 180);
+      canvas->print(httpUpdate.getLastErrorString().c_str());
+      tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+      currentOTAStatus = OTA_STATUS_ERROR;
+      sendOTAAck(OTA_STATUS_ERROR, 0, httpUpdate.getLastError());
+
+      // Restore ESP-NOW
+      delay(5000);  // Show error for 5 seconds
+      Serial.println("OTA: Restoring ESP-NOW...");
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_STA);
+      ESPNowComm::initReceiver(ESPNOW_CHANNEL);
+      ESPNowComm::setReceiveCallback(onPacketReceived);
+      lastPacketTime = millis();  // Reset timeout to avoid immediate error
+
+      // Clear the OTA screen
+      canvas->fillScreen(GC9A01A_BLACK);
+      tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+      Serial.println("OTA: Returned to normal operation");
+      break;
+
+    case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("OTA: No updates available (same firmware)");
+      displayOTAProgress("Same Version", 0);
+      delay(3000);  // Show message for 3 seconds
+
+      // Restore ESP-NOW
+      Serial.println("OTA: Restoring ESP-NOW...");
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_STA);
+      ESPNowComm::initReceiver(ESPNOW_CHANNEL);
+      ESPNowComm::setReceiveCallback(onPacketReceived);
+      lastPacketTime = millis();  // Reset timeout to avoid immediate error
+
+      // Clear the OTA screen
+      canvas->fillScreen(GC9A01A_BLACK);
+      tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+      Serial.println("OTA: Returned to normal operation");
+      break;
+
+    case HTTP_UPDATE_OK:
+      Serial.println("OTA: Update successful! Rebooting...");
+      displayOTAProgress("SUCCESS!", 100);
+      currentOTAStatus = OTA_STATUS_SUCCESS;
+      sendOTAAck(OTA_STATUS_SUCCESS, 100);
+      delay(1000);
+      // Device will reboot automatically
+      ESP.restart();
+      break;
+  }
+
+  otaInProgress = false;
 }
 
 // Draw a thick clock hand using 2 filled triangles (forming a rectangle) + rounded caps
@@ -610,12 +1069,21 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
+  // ---- Load Pixel ID from NVS ----
+  preferences.begin(NVS_NAMESPACE, true);  // Read-only mode
+  pixelId = preferences.getUChar(NVS_KEY_PIXEL_ID, PIXEL_ID_UNPROVISIONED);
+  preferences.end();
+
   // ---- Board Identification ----
   Serial.println("\n========== TWENTY-FOUR TIMES - PIXEL NODE ==========");
   Serial.print("Board: ");
   Serial.println(BOARD_NAME);
   Serial.print("Pixel ID: ");
-  Serial.println(PIXEL_ID);
+  if (pixelId == PIXEL_ID_UNPROVISIONED) {
+    Serial.println("UNPROVISIONED (255)");
+  } else {
+    Serial.println(pixelId);
+  }
   Serial.println("====================================================\n");
 
   // ---- Memory Statistics ----
@@ -721,7 +1189,7 @@ void setup() {
   // ---- ESP-NOW ----
   Serial.println("\n========== ESP-NOW INIT ==========");
   Serial.print("Pixel ID: ");
-  Serial.println(PIXEL_ID);
+  Serial.println(pixelId);
 
   if (ESPNowComm::initReceiver(ESPNOW_CHANNEL)) {
     ESPNowComm::setReceiveCallback(onPacketReceived);
@@ -741,11 +1209,56 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
 
+  // ---- Skip normal loop during OTA ----
+  // OTA update handles its own display and WiFi, so skip everything else
+  if (otaInProgress) {
+    delay(10);
+    return;
+  }
+
+  // ---- Start OTA if requested (must NOT run from ESP-NOW receive callback) ----
+  if (otaRequestPending) {
+    OTAStartPacket startCmd;
+    bool shouldStart = false;
+    portENTER_CRITICAL(&otaRequestMux);
+    if (otaRequestPending) {
+      startCmd = otaPendingStart;
+      otaRequestPending = false;
+      shouldStart = true;
+    }
+    portEXIT_CRITICAL(&otaRequestMux);
+
+    if (shouldStart) {
+      performOTAUpdate(startCmd);
+      return;
+    }
+  }
+
   // ---- ESP-NOW Timeout Check ----
   // If we haven't received a packet in PACKET_TIMEOUT ms, show error state
-  if (espnowEnabled && !errorState && (currentTime - lastPacketTime > PACKET_TIMEOUT)) {
+  // Skip this check during OTA since ESP-NOW is disabled
+  if (espnowEnabled && !errorState && !otaInProgress && (currentTime - lastPacketTime > PACKET_TIMEOUT)) {
     Serial.println("\n!!! ESP-NOW TIMEOUT - NO MASTER SIGNAL !!!\n");
     errorState = true;
+  }
+
+  // ---- Unprovisioned State Display ----
+  // If pixel has no assigned ID, show green screen with "?" and wait for provisioning
+  if (pixelId == PIXEL_ID_UNPROVISIONED) {
+    canvas->fillScreen(0x07E0);  // Green background
+
+    // Draw large white question mark in the center
+    canvas->setTextColor(GC9A01A_WHITE);
+    canvas->setTextSize(15);
+    canvas->setCursor(85, 90);
+    canvas->print("?");
+
+    // Present unprovisioned frame to display
+    tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    // Slow update rate - just waiting for provisioning
+    delay(100);
+    return;
   }
 
   // ---- Identify Mode Display ----
@@ -758,9 +1271,9 @@ void loop() {
     canvas->setTextSize(15);  // Very large text
 
     // Center the text (approximate positioning for single/double digit)
-    int xPos = (PIXEL_ID < 10) ? 85 : 55;
+    int xPos = (pixelId < 10) ? 85 : 55;
     canvas->setCursor(xPos, 90);
-    canvas->print(PIXEL_ID);
+    canvas->print(pixelId);
 
     // Present identify frame to display
     tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);

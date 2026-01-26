@@ -1,0 +1,19 @@
+{
+  "name": "twenty-four-times",
+  "version": "1.0.0",
+  "description": "ESP32 clock display with 24 synchronized pixels",
+  "scripts": {
+    "version:bump": "node scripts/bump-version.js",
+    "build:pixel": "pio run -e pixel_s3",
+    "build:master": "pio run -e master_resistive",
+    "upload:pixel": "pio run -e pixel_s3 --target upload",
+    "upload:master": "pio run -e master_resistive --target upload",
+    "ota:prepare": "node scripts/prepare-ota.js",
+    "ota:upload": "npm run ota:prepare && pio run -e master_resistive --target uploadfs",
+    "ota:full": "npm run build:pixel && npm run ota:upload"
+  },
+  "keywords": ["esp32", "clock", "display"],
+  "author": "",
+  "license": "MIT"
+}
+
