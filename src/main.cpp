@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 3
+#define FIRMWARE_VERSION_MINOR 4
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -154,11 +154,11 @@ uint8_t currentOTAProgress = 0;    // 0-100
 // Instead, latch the request and perform OTA from loop() context.
 static portMUX_TYPE otaRequestMux = portMUX_INITIALIZER_UNLOCKED;
 volatile bool otaRequestPending = false;
-OTANotifyPacket otaPendingNotify;
+OTAStartPacket otaPendingStart;  // Changed from OTANotifyPacket to OTAStartPacket
 
 // Forward declarations for OTA
 void sendOTAAck(OTAStatus status, uint8_t progress, uint16_t errorCode = 0);
-void performOTAUpdate(const OTANotifyPacket& notify);
+void performOTAUpdate(const OTAStartPacket& start);
 
 // FPS tracking
 unsigned long fpsLastTime = 0;
@@ -753,20 +753,35 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
     }
 
     case CMD_OTA_NOTIFY: {
-      const OTANotifyPacket& notify = packet->otaNotify;
-      Serial.println("ESP-NOW: OTA notify received!");
-      Serial.print("  SSID: ");
-      Serial.println(notify.ssid);
-      Serial.print("  URL: ");
-      Serial.println(notify.firmwareUrl);
-      Serial.print("  Size: ");
-      Serial.println(notify.firmwareSize);
+      // Deprecated - kept for backward compatibility
+      // New flow uses CMD_OTA_START for sequential orchestration
+      Serial.println("ESP-NOW: OTA notify received (deprecated - use CMD_OTA_START)");
+      break;
+    }
 
-	      // Latch OTA request; perform it later from loop() (safe context)
-	      portENTER_CRITICAL(&otaRequestMux);
-	      otaPendingNotify = notify;
-	      otaRequestPending = true;
-	      portEXIT_CRITICAL(&otaRequestMux);
+    case CMD_OTA_START: {
+      const OTAStartPacket& start = packet->otaStart;
+
+      // Only respond if this command is for us
+      if (start.targetPixelId != pixelId) {
+        break;  // Ignore - not for this pixel
+      }
+
+      Serial.println("ESP-NOW: OTA START received!");
+      Serial.print("  Target: Pixel ");
+      Serial.println(start.targetPixelId);
+      Serial.print("  SSID: ");
+      Serial.println(start.ssid);
+      Serial.print("  URL: ");
+      Serial.println(start.firmwareUrl);
+      Serial.print("  Size: ");
+      Serial.println(start.firmwareSize);
+
+      // Latch OTA request; perform it later from loop() (safe context)
+      portENTER_CRITICAL(&otaRequestMux);
+      otaPendingStart = start;
+      otaRequestPending = true;
+      portEXIT_CRITICAL(&otaRequestMux);
       break;
     }
 
@@ -849,7 +864,7 @@ void displayOTAProgress(const char* status, int progress) {
 }
 
 // Perform OTA update - connects to WiFi and downloads firmware
-void performOTAUpdate(const OTANotifyPacket& notify) {
+void performOTAUpdate(const OTAStartPacket& start) {
   otaInProgress = true;
   currentOTAStatus = OTA_STATUS_STARTING;
   sendOTAAck(OTA_STATUS_STARTING, 0);
@@ -858,9 +873,9 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
 
   Serial.println("OTA: Connecting to WiFi...");
   Serial.print("OTA: SSID: ");
-  Serial.println(notify.ssid);
+  Serial.println(start.ssid);
   Serial.print("OTA: URL: ");
-  Serial.println(notify.firmwareUrl);
+  Serial.println(start.firmwareUrl);
 
   // Disconnect ESP-NOW temporarily
   Serial.println("OTA: Deinitializing ESP-NOW...");
@@ -893,7 +908,7 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
 	    Serial.print(WiFi.RSSI(i));
 	    Serial.println(")");
 
-	    if (WiFi.SSID(i) == String(notify.ssid)) {
+	    if (WiFi.SSID(i) == String(start.ssid)) {
 	      apFound = true;
 	      Serial.println("  ^^ TARGET AP FOUND!");
 	    }
@@ -907,7 +922,7 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
 
   Serial.println("OTA: Starting WiFi connection...");
   Serial.flush();
-  WiFi.begin(notify.ssid, notify.password);
+  WiFi.begin(start.ssid, start.password);
 
   // Wait for connection (timeout after 30 seconds)
   int timeout = 60;  // 30 seconds (500ms per iteration)
@@ -956,9 +971,9 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
   // Perform the update
   WiFiClient client;
   Serial.print("OTA: Downloading from ");
-  Serial.println(notify.firmwareUrl);
+  Serial.println(start.firmwareUrl);
 
-  t_httpUpdate_return ret = httpUpdate.update(client, notify.firmwareUrl);
+  t_httpUpdate_return ret = httpUpdate.update(client, start.firmwareUrl);
 
   switch (ret) {
     case HTTP_UPDATE_FAILED:
@@ -1210,18 +1225,18 @@ void loop() {
 
   // ---- Start OTA if requested (must NOT run from ESP-NOW receive callback) ----
   if (otaRequestPending) {
-    OTANotifyPacket notify;
-    bool start = false;
+    OTAStartPacket startCmd;
+    bool shouldStart = false;
     portENTER_CRITICAL(&otaRequestMux);
     if (otaRequestPending) {
-      notify = otaPendingNotify;
+      startCmd = otaPendingStart;
       otaRequestPending = false;
-      start = true;
+      shouldStart = true;
     }
     portEXIT_CRITICAL(&otaRequestMux);
 
-    if (start) {
-      performOTAUpdate(notify);
+    if (shouldStart) {
+      performOTAUpdate(startCmd);
       return;
     }
   }
