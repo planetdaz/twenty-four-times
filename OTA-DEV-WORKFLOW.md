@@ -37,14 +37,20 @@ This starts a Node.js HTTP server on port 3000. Verify in the terminal that:
 On the master touchscreen:
 - Tap **Send Update**
 
-### 5. Watch the Magic
+### 5. Watch the Progress
+
+**Master screen** shows: "UPDATING..." with instructions to check progress elsewhere
+
+**Monitor progress on:**
+- **Dev server terminal**: Shows each pixel downloading in real-time
+- **Pixel screens**: Show download/flash progress individually
 
 All 24 pixels will:
 - Connect to the WiFi AP simultaneously
 - Download firmware in parallel from your dev machine
-- Flash and reboot (~15 seconds total)
+- Flash and reboot (~15-20 seconds total)
 
-The Node.js terminal will show each download in real-time.
+When complete, master screen shows "COMPLETE!" - tap "Done" to return to menu.
 
 ## Architecture
 
@@ -60,19 +66,15 @@ Dev Machine (192.168.4.2:3000)
    Master ESP32 ←--ESP-NOW-→ Pixels (24x)
 ```
 
-## Alternative: Build + Server in One Command
+## Building Firmware
 
-If you need to build firmware first:
+If you need to build new pixel firmware first:
 
 ```bash
-npm run ota:dev
+npm run build:pixel
 ```
 
-This will:
-1. Build the pixel firmware (`pixel_s3` target)
-2. Start the OTA server
-
-Then follow steps 1-5 above.
+Then run the OTA server and follow steps 1-5 above.
 
 ## Configuration
 
@@ -98,7 +100,7 @@ Check the terminal output - it shows all network interfaces. If you get somethin
 
 Verify:
 - Dev machine is connected to `TwentyFourTimes` WiFi
-- Node.js server is running (`npm run ota:dev`)
+- Node.js server is running (`npm run ota:server`)
 - Firmware file exists at `.pio/build/pixel_s3/firmware.bin`
 - Firewall isn't blocking port 3000
 
@@ -113,10 +115,10 @@ If downloads are still slow:
 
 | Script | Description |
 |--------|-------------|
-| `npm run ota:server` | **Recommended**: Start dev OTA server |
-| `npm run ota:dev` | Build pixel firmware + start server |
-| `npm run build:pixel` | Build pixel firmware only |
-| `npm run build:master` | Build master firmware only |
+| `npm run ota:server` | Start dev OTA server (requires firmware.bin to exist) |
+| `npm run build:pixel` | Build pixel firmware |
+| `npm run build:master` | Build master firmware |
+| `npm run upload:pixel` | Upload pixel firmware via USB |
 | `npm run upload:master` | Upload master firmware via USB |
 
 ## Technical Details
