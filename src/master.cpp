@@ -147,6 +147,9 @@ uint32_t firmwareSize = 0;
 uint8_t otaPixelStatus[MAX_PIXELS];  // Status of each pixel (OTAStatus enum)
 uint8_t otaPixelProgress[MAX_PIXELS]; // Progress of each pixel (0-100)
 
+// Flag to request OTA screen redraw from the main loop (never draw from ESP-NOW callbacks)
+volatile bool otaScreenNeedsRedraw = false;
+
 // ===== VERSION TRACKING =====
 // Stores version info received from pixels
 struct PixelVersionInfo {
@@ -1469,7 +1472,7 @@ void handleOTAAck(const OTAAckPacket& ack) {
 
     // Refresh OTA screen if we're in OTA mode
     if (currentMode == MODE_OTA && otaPhase == OTA_IN_PROGRESS) {
-      drawOTAScreen();
+      otaScreenNeedsRedraw = true;
     }
   }
 }
@@ -2182,6 +2185,12 @@ void loop() {
     }
 
     case MODE_OTA: {
+      // Redraw requested by ESP-NOW callback (safe to draw here in loop context)
+      if (otaScreenNeedsRedraw) {
+        otaScreenNeedsRedraw = false;
+        drawOTAScreen();
+      }
+
       // Handle HTTP server requests when running
       if (otaServerRunning) {
         otaServer.handleClient();
