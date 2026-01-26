@@ -155,7 +155,11 @@ uint8_t otaQueueIndex = 0;           // Current position in queue
 unsigned long otaCurrentPixelStartTime = 0;  // When current pixel started
 unsigned long otaLastActivityTime = 0;       // Last time we saw any activity from current pixel
 const unsigned long OTA_PIXEL_TIMEOUT = 120000; // 120 seconds max per pixel (safety timeout)
-const unsigned long OTA_REBOOT_DETECT_TIME = 5000; // If pixel silent for 5s, assume it's rebooting
+// IMPORTANT: Pixels disable ESP-NOW during the actual WiFi download.
+// The master must NOT assume completion until the pixel reboots and responds again.
+const unsigned long OTA_REBOOT_DETECT_TIME = 5000; // Minimum time before we accept "pixel is back" signals
+const unsigned long OTA_VERSION_PROBE_INTERVAL = 3000; // How often to probe for the current pixel coming back
+unsigned long otaLastVersionProbeTime = 0;
 
 // Flag to request OTA screen redraw from the main loop (never draw from ESP-NOW callbacks)
 volatile bool otaScreenNeedsRedraw = false;
@@ -1642,6 +1646,7 @@ void sendOTAStartToPixel(uint8_t pixelId) {
   if (ESPNowComm::sendPacket(&packet, sizeof(OTAStartPacket))) {
     otaPixelStatus[pixelId] = OTA_STATUS_STARTING;
     otaCurrentPixelStartTime = millis();
+    otaLastVersionProbeTime = 0;
     Serial.print("OTA: Pixel ");
     Serial.print(pixelId);
     Serial.println(" started!");
@@ -1893,12 +1898,22 @@ void handleVersionResponse(const VersionResponsePacket& resp) {
     // If we're updating pixels and this is the current pixel, it just came back online!
     if (otaPhase == OTA_IN_PROGRESS && otaQueueIndex < otaQueueSize) {
       if (resp.pixelId == otaQueue[otaQueueIndex]) {
-        // Current pixel came back online after reboot - mark as success!
-        Serial.print("OTA: Pixel ");
-        Serial.print(resp.pixelId);
-        Serial.println(" came back online after OTA!");
-        otaPixelStatus[resp.pixelId] = OTA_STATUS_SUCCESS;
-        otaScreenNeedsRedraw = true;
+        // Only treat this as completion if enough time has elapsed.
+        // This prevents a late discovery response from being mistaken as a reboot/completion signal.
+        unsigned long elapsed = millis() - otaCurrentPixelStartTime;
+        if (elapsed >= OTA_REBOOT_DETECT_TIME) {
+          Serial.print("OTA: Pixel ");
+          Serial.print(resp.pixelId);
+          Serial.println(" responded after OTA window -> marking SUCCESS");
+          otaPixelStatus[resp.pixelId] = OTA_STATUS_SUCCESS;
+          otaScreenNeedsRedraw = true;
+        } else {
+          Serial.print("OTA: Ignoring early version response from current pixel ");
+          Serial.print(resp.pixelId);
+          Serial.print(" (");
+          Serial.print(elapsed);
+          Serial.println("ms) - likely late discovery reply");
+        }
       }
     }
 
@@ -2353,6 +2368,21 @@ void loop() {
         uint8_t currentPixel = otaQueue[otaQueueIndex];
         OTAStatus status = (OTAStatus)otaPixelStatus[currentPixel];
         unsigned long elapsed = currentTime - otaCurrentPixelStartTime;
+
+        // Probe for the pixel coming back online after reboot.
+        // Pixels disable ESP-NOW during the actual download, so we won't see progress.
+        // Once they reboot, they can respond to GET_VERSION again.
+        if (status != OTA_STATUS_SUCCESS && status != OTA_STATUS_ERROR) {
+          if (elapsed >= OTA_REBOOT_DETECT_TIME) {
+            if (otaLastVersionProbeTime == 0 || (currentTime - otaLastVersionProbeTime) >= OTA_VERSION_PROBE_INTERVAL) {
+              ESPNowPacket probe;
+              probe.getVersion.command = CMD_GET_VERSION;
+              probe.getVersion.displayOnScreen = false;
+              ESPNowComm::sendPacket(&probe, sizeof(GetVersionPacket));
+              otaLastVersionProbeTime = currentTime;
+            }
+          }
+        }
 
         // Pixel is considered done if:
         // 1. Status is SUCCESS (pixel came back online after reboot)
