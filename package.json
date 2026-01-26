@@ -10,7 +10,9 @@
     "upload:master": "pio run -e master_resistive --target upload",
     "ota:prepare": "node scripts/prepare-ota.js",
     "ota:upload": "npm run ota:prepare && pio run -e master_resistive --target uploadfs",
-    "ota:full": "npm run build:pixel && npm run ota:upload"
+    "ota:full": "npm run build:pixel && npm run ota:upload",
+    "ota:server": "node scripts/ota-server.js",
+    "ota:dev": "npm run build:pixel && npm run ota:server"
   },
   "keywords": ["esp32", "clock", "display"],
   "author": "",

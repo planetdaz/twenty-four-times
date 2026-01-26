@@ -8,7 +8,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 5
+#define FIRMWARE_VERSION_MINOR 6
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -130,7 +130,16 @@ const char* OTA_AP_SSID = "TwentyFourTimes";
 const char* OTA_AP_PASSWORD = "clockupdate";  // Min 8 characters
 const char* OTA_FIRMWARE_PATH = "/firmware.bin";
 
-// HTTP server for serving firmware
+// Dev machine OTA server configuration
+// When using dev machine as OTA server (npm run ota:dev):
+// - Dev machine joins the master's AP and typically gets IP 192.168.4.2
+// - Node.js server runs on port 3000
+// - All 24 pixels can download in parallel (~15 seconds total)
+const char* OTA_DEV_SERVER_IP = "192.168.4.2";
+const uint16_t OTA_DEV_SERVER_PORT = 3000;
+const bool USE_DEV_OTA_SERVER = true;  // Set false to use master's built-in server
+
+// HTTP server for serving firmware (legacy - only used if USE_DEV_OTA_SERVER = false)
 WebServer otaServer(80);
 bool otaServerRunning = false;
 
@@ -1534,35 +1543,53 @@ void initOTAServer() {
   Serial.print("OTA: AP IP: ");
   Serial.println(apIP);
 
-  // Initialize LittleFS
-  if (!LittleFS.begin(true)) {
-    Serial.println("OTA: LittleFS mount failed!");
-    return;
-  }
+  if (USE_DEV_OTA_SERVER) {
+    // Using dev machine as OTA server
+    Serial.println("OTA: Using dev machine OTA server");
+    Serial.print("OTA: Dev server URL: http://");
+    Serial.print(OTA_DEV_SERVER_IP);
+    Serial.print(":");
+    Serial.print(OTA_DEV_SERVER_PORT);
+    Serial.println("/firmware.bin");
+    Serial.println("OTA: Make sure dev machine is connected to this AP!");
+    Serial.println("OTA: Run 'npm run ota:dev' on dev machine");
 
-  // Check if firmware file exists
-  if (LittleFS.exists(OTA_FIRMWARE_PATH)) {
-    fs::File file = LittleFS.open(OTA_FIRMWARE_PATH, "r");
-    firmwareSize = file.size();
-    file.close();
-    Serial.print("OTA: Firmware found, size=");
-    Serial.println(firmwareSize);
+    // Set dummy firmware size (dev server will provide actual size)
+    firmwareSize = 1000000;  // Placeholder, pixels will get actual size from HTTP headers
+
+    otaPhase = OTA_READY;
   } else {
-    firmwareSize = 0;
-    Serial.println("OTA: No firmware file found. Upload via USB first.");
+    // Using master's built-in HTTP server (legacy mode)
+    // Initialize LittleFS
+    if (!LittleFS.begin(true)) {
+      Serial.println("OTA: LittleFS mount failed!");
+      return;
+    }
+
+    // Check if firmware file exists
+    if (LittleFS.exists(OTA_FIRMWARE_PATH)) {
+      fs::File file = LittleFS.open(OTA_FIRMWARE_PATH, "r");
+      firmwareSize = file.size();
+      file.close();
+      Serial.print("OTA: Firmware found, size=");
+      Serial.println(firmwareSize);
+    } else {
+      firmwareSize = 0;
+      Serial.println("OTA: No firmware file found. Upload via USB first.");
+    }
+
+    // Set up HTTP routes
+    otaServer.on("/firmware.bin", HTTP_GET, handleFirmwareRequest);
+    otaServer.on("/", HTTP_GET, []() {
+      otaServer.send(200, "text/plain", "Twenty-Four Times OTA Server");
+    });
+
+    otaServer.begin();
+    otaServerRunning = true;
+    otaPhase = OTA_READY;
+
+    Serial.println("OTA: HTTP server started on port 80");
   }
-
-  // Set up HTTP routes
-  otaServer.on("/firmware.bin", HTTP_GET, handleFirmwareRequest);
-  otaServer.on("/", HTTP_GET, []() {
-    otaServer.send(200, "text/plain", "Twenty-Four Times OTA Server");
-  });
-
-  otaServer.begin();
-  otaServerRunning = true;
-  otaPhase = OTA_READY;
-
-  Serial.println("OTA: HTTP server started on port 80");
 
   // ESP-NOW should still work in AP_STA mode on the same channel
   // Don't re-initialize it as that would kill the AP mode!
@@ -1571,12 +1598,15 @@ void initOTAServer() {
 
 // Stop OTA server and return to normal operation
 void stopOTAServer() {
-  if (!otaServerRunning) return;
+  if (otaPhase == OTA_IDLE) return;
 
-  otaServer.stop();
+  if (!USE_DEV_OTA_SERVER && otaServerRunning) {
+    otaServer.stop();
+    otaServerRunning = false;
+  }
+
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
-  otaServerRunning = false;
   otaPhase = OTA_IDLE;
 
   // Re-initialize ESP-NOW
@@ -1629,10 +1659,17 @@ void sendOTAStartToPixel(uint8_t pixelId) {
   strncpy(packet.otaStart.password, OTA_AP_PASSWORD, 31);
   packet.otaStart.password[31] = '\0';
 
-  // Build firmware URL using AP IP
-  IPAddress apIP = WiFi.softAPIP();
-  snprintf(packet.otaStart.firmwareUrl, 127, "http://%d.%d.%d.%d/firmware.bin",
-           apIP[0], apIP[1], apIP[2], apIP[3]);
+  // Build firmware URL
+  if (USE_DEV_OTA_SERVER) {
+    // Use dev machine as OTA server (faster, supports parallel downloads)
+    snprintf(packet.otaStart.firmwareUrl, 127, "http://%s:%d/firmware.bin",
+             OTA_DEV_SERVER_IP, OTA_DEV_SERVER_PORT);
+  } else {
+    // Use master's built-in server (legacy, sequential only)
+    IPAddress apIP = WiFi.softAPIP();
+    snprintf(packet.otaStart.firmwareUrl, 127, "http://%d.%d.%d.%d/firmware.bin",
+             apIP[0], apIP[1], apIP[2], apIP[3]);
+  }
   packet.otaStart.firmwareUrl[127] = '\0';
 
   packet.otaStart.firmwareSize = firmwareSize;
