@@ -7,6 +7,7 @@
 #include <HTTPUpdate.h>
 #include <WiFiClient.h>
 #include <esp_now.h>
+#include <esp_wifi.h>
 
 // Proof of concept: Three rotating clock hands on a 240x240 circular display
 // Based on the twenty-four-times simulation
@@ -851,11 +852,51 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
   Serial.print("OTA: URL: ");
   Serial.println(notify.firmwareUrl);
 
-  // Disconnect ESP-NOW temporarily - WiFi mode change required
+  // Disconnect ESP-NOW temporarily
+  Serial.println("OTA: Deinitializing ESP-NOW...");
   esp_now_deinit();
 
-  // Connect to master's WiFi AP
+  // Restart WiFi subsystem properly
+  Serial.println("OTA: Restarting WiFi...");
+  WiFi.disconnect();
+  delay(100);
+  WiFi.mode(WIFI_MODE_NULL);
+  delay(100);
   WiFi.mode(WIFI_STA);
+  delay(500);
+
+  // Scan for the AP first to verify it's visible
+  Serial.println("OTA: Scanning for networks...");
+  Serial.flush();
+  int n = WiFi.scanNetworks();
+  Serial.print("OTA: Found ");
+  Serial.print(n);
+  Serial.println(" networks");
+
+  bool apFound = false;
+  for (int i = 0; i < n; i++) {
+    Serial.print("  ");
+    Serial.print(i);
+    Serial.print(": ");
+    Serial.print(WiFi.SSID(i));
+    Serial.print(" (Ch ");
+    Serial.print(WiFi.channel(i));
+    Serial.print(", RSSI ");
+    Serial.print(WiFi.RSSI(i));
+    Serial.println(")");
+
+    if (WiFi.SSID(i) == String(notify.ssid)) {
+      apFound = true;
+      Serial.println("  ^^ TARGET AP FOUND!");
+    }
+  }
+
+  if (!apFound) {
+    Serial.println("OTA: ERROR - Target AP not found in scan!");
+  }
+
+  Serial.println("OTA: Starting WiFi connection...");
+  Serial.flush();
   WiFi.begin(notify.ssid, notify.password);
 
   // Wait for connection (timeout after 30 seconds)
@@ -871,6 +912,7 @@ void performOTAUpdate(const OTANotifyPacket& notify) {
     Serial.println("\nOTA: WiFi connection failed!");
     Serial.print("OTA: WiFi status: ");
     Serial.println(WiFi.status());
+    Serial.println("OTA: Status codes: 0=IDLE, 1=NO_SSID, 3=CONNECTED, 4=CONNECT_FAILED, 6=DISCONNECTED");
     displayOTAProgress("WiFi Failed", 0);
     currentOTAStatus = OTA_STATUS_ERROR;
 
