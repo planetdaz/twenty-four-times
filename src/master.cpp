@@ -8,7 +8,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 4
+#define FIRMWARE_VERSION_MINOR 5
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -153,7 +153,9 @@ uint8_t otaQueue[MAX_PIXELS];        // Pixel IDs to update (in order)
 uint8_t otaQueueSize = 0;            // How many pixels in queue
 uint8_t otaQueueIndex = 0;           // Current position in queue
 unsigned long otaCurrentPixelStartTime = 0;  // When current pixel started
-const unsigned long OTA_PIXEL_TIMEOUT = 60000; // 60 seconds per pixel
+unsigned long otaLastActivityTime = 0;       // Last time we saw any activity from current pixel
+const unsigned long OTA_PIXEL_TIMEOUT = 120000; // 120 seconds max per pixel (safety timeout)
+const unsigned long OTA_REBOOT_DETECT_TIME = 5000; // If pixel silent for 5s, assume it's rebooting
 
 // Flag to request OTA screen redraw from the main loop (never draw from ESP-NOW callbacks)
 volatile bool otaScreenNeedsRedraw = false;
@@ -1479,6 +1481,13 @@ void handleOTAAck(const OTAAckPacket& ack) {
     Serial.print(ack.progress);
     Serial.println("%");
 
+    // Track activity from current pixel during OTA
+    if (otaPhase == OTA_IN_PROGRESS && otaQueueIndex < otaQueueSize) {
+      if (ack.pixelId == otaQueue[otaQueueIndex]) {
+        otaLastActivityTime = millis();
+      }
+    }
+
     // Refresh OTA screen if we're in OTA mode
     if (currentMode == MODE_OTA && otaPhase == OTA_IN_PROGRESS) {
       otaScreenNeedsRedraw = true;
@@ -1748,41 +1757,6 @@ void drawOTAScreen() {
 
     tft.setTextSize(1);
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setCursor(10, 60);
-    tft.print("Queue: ");
-    tft.print(otaQueueIndex + 1);
-    tft.print(" of ");
-    tft.println(otaQueueSize);
-
-    if (otaQueueIndex < otaQueueSize) {
-      uint8_t currentPixel = otaQueue[otaQueueIndex];
-      tft.setCursor(10, 80);
-      tft.print("Current: Pixel ");
-      tft.println(currentPixel);
-
-      tft.setCursor(10, 95);
-      tft.print("Status: ");
-      switch (otaPixelStatus[currentPixel]) {
-        case OTA_STATUS_STARTING: tft.println("Starting..."); break;
-        case OTA_STATUS_DOWNLOADING: tft.println("Downloading"); break;
-        case OTA_STATUS_FLASHING: tft.println("Flashing"); break;
-        case OTA_STATUS_SUCCESS: tft.println("Success!"); break;
-        case OTA_STATUS_ERROR: tft.println("ERROR"); break;
-        default: tft.println("Waiting..."); break;
-      }
-
-      tft.setCursor(10, 110);
-      tft.print("Progress: ");
-      tft.print(otaPixelProgress[currentPixel]);
-      tft.println("%");
-
-      // Show elapsed time
-      unsigned long elapsed = (millis() - otaCurrentPixelStartTime) / 1000;
-      tft.setCursor(10, 125);
-      tft.print("Time: ");
-      tft.print(elapsed);
-      tft.println("s");
-    }
 
     // Count completed
     int completed = otaQueueIndex;
@@ -1790,11 +1764,28 @@ void drawOTAScreen() {
       completed++;
     }
 
-    tft.setCursor(10, 145);
-    tft.print("Completed: ");
+    tft.setCursor(10, 65);
+    tft.print("Progress: ");
     tft.print(completed);
     tft.print(" / ");
-    tft.println(otaQueueSize);
+    tft.print(otaQueueSize);
+    tft.println(" pixels");
+
+    if (otaQueueIndex < otaQueueSize) {
+      uint8_t currentPixel = otaQueue[otaQueueIndex];
+      tft.setCursor(10, 90);
+      tft.print("Current: Pixel #");
+      tft.println(currentPixel);
+
+      tft.setCursor(10, 110);
+      tft.println("Watch pixel screen for progress.");
+      tft.setCursor(10, 125);
+      tft.println("Pixel will reboot when complete.");
+
+      tft.setCursor(10, 145);
+      tft.setTextColor(TFT_DARKGREY, COLOR_BG);
+      tft.println("(~60-90 seconds per pixel)");
+    }
 
     // Done button (always available to exit)
     tft.fillRoundRect(110, 180, 100, 40, 8, TFT_DARKGREY);
@@ -1895,6 +1886,18 @@ void handleVersionResponse(const VersionResponsePacket& resp) {
         Serial.print(" to queue (");
         Serial.print(otaQueueSize);
         Serial.println(" total)");
+        otaScreenNeedsRedraw = true;
+      }
+    }
+
+    // If we're updating pixels and this is the current pixel, it just came back online!
+    if (otaPhase == OTA_IN_PROGRESS && otaQueueIndex < otaQueueSize) {
+      if (resp.pixelId == otaQueue[otaQueueIndex]) {
+        // Current pixel came back online after reboot - mark as success!
+        Serial.print("OTA: Pixel ");
+        Serial.print(resp.pixelId);
+        Serial.println(" came back online after OTA!");
+        otaPixelStatus[resp.pixelId] = OTA_STATUS_SUCCESS;
         otaScreenNeedsRedraw = true;
       }
     }
@@ -2349,44 +2352,47 @@ void loop() {
       if (otaPhase == OTA_IN_PROGRESS && otaQueueIndex < otaQueueSize) {
         uint8_t currentPixel = otaQueue[otaQueueIndex];
         OTAStatus status = (OTAStatus)otaPixelStatus[currentPixel];
+        unsigned long elapsed = currentTime - otaCurrentPixelStartTime;
 
-        // Check if current pixel finished (success or error)
-        if (status == OTA_STATUS_SUCCESS || status == OTA_STATUS_ERROR) {
+        // Pixel is considered done if:
+        // 1. Status is SUCCESS (pixel came back online after reboot)
+        // 2. Status is ERROR (received error ACK)
+        // 3. Timeout after 120 seconds (safety fallback)
+        bool pixelDone = false;
+        bool pixelSuccess = false;
+
+        if (status == OTA_STATUS_SUCCESS) {
+          pixelDone = true;
+          pixelSuccess = true;
+        } else if (status == OTA_STATUS_ERROR) {
+          pixelDone = true;
+          pixelSuccess = false;
+        } else if (elapsed > OTA_PIXEL_TIMEOUT) {
+          // Safety timeout - assume failure
+          pixelDone = true;
+          pixelSuccess = false;
+          otaPixelStatus[currentPixel] = OTA_STATUS_ERROR;
+          Serial.print("OTA: Pixel ");
+          Serial.print(currentPixel);
+          Serial.println(" TIMEOUT after 120 seconds!");
+        }
+
+        if (pixelDone) {
           Serial.print("OTA: Pixel ");
           Serial.print(currentPixel);
           Serial.print(" finished with status ");
-          Serial.println(status == OTA_STATUS_SUCCESS ? "SUCCESS" : "ERROR");
+          Serial.println(pixelSuccess ? "SUCCESS" : "ERROR");
 
           // Move to next pixel
           otaQueueIndex++;
           if (otaQueueIndex < otaQueueSize) {
             Serial.print("OTA: Starting next pixel in queue: ");
             Serial.println(otaQueue[otaQueueIndex]);
-            delay(1000);  // Brief pause between pixels
+            delay(2000);  // Brief pause between pixels
             sendOTAStartToPixel(otaQueue[otaQueueIndex]);
             drawOTAScreen();
           } else {
             Serial.println("OTA: All pixels complete!");
-            otaPhase = OTA_COMPLETE;
-            drawOTAScreen();
-          }
-        }
-        // Check for timeout
-        else if (currentTime - otaCurrentPixelStartTime > OTA_PIXEL_TIMEOUT) {
-          Serial.print("OTA: Pixel ");
-          Serial.print(currentPixel);
-          Serial.println(" TIMEOUT!");
-          otaPixelStatus[currentPixel] = OTA_STATUS_ERROR;
-
-          // Move to next pixel
-          otaQueueIndex++;
-          if (otaQueueIndex < otaQueueSize) {
-            Serial.print("OTA: Starting next pixel after timeout: ");
-            Serial.println(otaQueue[otaQueueIndex]);
-            sendOTAStartToPixel(otaQueue[otaQueueIndex]);
-            drawOTAScreen();
-          } else {
-            Serial.println("OTA: All pixels processed (some may have timed out)");
             otaPhase = OTA_COMPLETE;
             drawOTAScreen();
           }
