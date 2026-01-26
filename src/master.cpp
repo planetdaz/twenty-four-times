@@ -3,12 +3,10 @@
 #include <Wire.h>
 #include <TFT_eSPI.h>
 #include <ESPNowComm.h>
-#include <WebServer.h>
-#include <LittleFS.h>
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 5
+#define FIRMWARE_VERSION_MINOR 10
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -130,36 +128,33 @@ const char* OTA_AP_SSID = "TwentyFourTimes";
 const char* OTA_AP_PASSWORD = "clockupdate";  // Min 8 characters
 const char* OTA_FIRMWARE_PATH = "/firmware.bin";
 
-// HTTP server for serving firmware
-WebServer otaServer(80);
-bool otaServerRunning = false;
+// Dev machine OTA server configuration
+// Master creates WiFi AP, dev machine joins it and runs Node.js OTA server
+// All 24 pixels download in parallel from dev machine (~15 seconds total)
+const char* OTA_DEV_SERVER_IP = "192.168.4.2";
+const uint16_t OTA_DEV_SERVER_PORT = 3000;
 
 // OTA state tracking
 enum OTAPhase {
   OTA_IDLE,           // Waiting for user to start
-  OTA_READY,          // Server running, ready to send notify
-  OTA_DISCOVERING,    // Querying which pixels are online
-  OTA_IN_PROGRESS,    // Updating pixels sequentially
+  OTA_READY,          // WiFi AP running, ready to send update
+  OTA_IN_PROGRESS,    // Updating all pixels in parallel
   OTA_COMPLETE        // All done
 };
+
+// Special pixel ID for broadcast (send to all pixels)
+const uint8_t BROADCAST_PIXEL_ID = 0xFF;
 
 OTAPhase otaPhase = OTA_IDLE;
 uint32_t firmwareSize = 0;
 uint8_t otaPixelStatus[MAX_PIXELS];  // Status of each pixel (OTAStatus enum)
 uint8_t otaPixelProgress[MAX_PIXELS]; // Progress of each pixel (0-100)
 
-// Sequential OTA orchestration
-uint8_t otaQueue[MAX_PIXELS];        // Pixel IDs to update (in order)
-uint8_t otaQueueSize = 0;            // How many pixels in queue
-uint8_t otaQueueIndex = 0;           // Current position in queue
-unsigned long otaCurrentPixelStartTime = 0;  // When current pixel started
-unsigned long otaLastActivityTime = 0;       // Last time we saw any activity from current pixel
-const unsigned long OTA_PIXEL_TIMEOUT = 120000; // 120 seconds max per pixel (safety timeout)
+// Parallel OTA orchestration
+unsigned long otaStartTime = 0;      // When OTA broadcast was sent
+const unsigned long OTA_TOTAL_TIMEOUT = 120000; // 120 seconds max for all pixels
 // IMPORTANT: Pixels disable ESP-NOW during the actual WiFi download.
-// The master must NOT assume completion until the pixel reboots and responds again.
-const unsigned long OTA_REBOOT_DETECT_TIME = 5000; // Minimum time before we accept "pixel is back" signals
-const unsigned long OTA_VERSION_PROBE_INTERVAL = 3000; // How often to probe for the current pixel coming back
-unsigned long otaLastVersionProbeTime = 0;
+// Master just broadcasts the command and lets all pixels update independently.
 
 // Flag to request OTA screen redraw from the main loop (never draw from ESP-NOW callbacks)
 volatile bool otaScreenNeedsRedraw = false;
@@ -280,8 +275,7 @@ void initOTAServer();
 void stopOTAServer();
 void drawOTAScreen();
 void handleOTATouch(uint16_t x, uint16_t y);
-void startOTADiscovery();
-void sendOTAStartToPixel(uint8_t pixelId);
+void sendOTABroadcast();
 void handleOTAAck(const OTAAckPacket& ack);
 // Version functions
 void drawVersionScreen();
@@ -1485,13 +1479,6 @@ void handleOTAAck(const OTAAckPacket& ack) {
     Serial.print(ack.progress);
     Serial.println("%");
 
-    // Track activity from current pixel during OTA
-    if (otaPhase == OTA_IN_PROGRESS && otaQueueIndex < otaQueueSize) {
-      if (ack.pixelId == otaQueue[otaQueueIndex]) {
-        otaLastActivityTime = millis();
-      }
-    }
-
     // Refresh OTA screen if we're in OTA mode
     if (currentMode == MODE_OTA && otaPhase == OTA_IN_PROGRESS) {
       otaScreenNeedsRedraw = true;
@@ -1499,25 +1486,9 @@ void handleOTAAck(const OTAAckPacket& ack) {
   }
 }
 
-// HTTP handler for serving firmware binary
-void handleFirmwareRequest() {
-  fs::File file = LittleFS.open(OTA_FIRMWARE_PATH, "r");
-  if (!file) {
-    otaServer.send(404, "text/plain", "Firmware not found");
-    Serial.println("OTA: Firmware file not found!");
-    return;
-  }
-
-  Serial.print("OTA: Serving firmware, size=");
-  Serial.println(file.size());
-
-  otaServer.streamFile(file, "application/octet-stream");
-  file.close();
-}
-
-// Initialize WiFi AP and HTTP server for OTA
+// Initialize WiFi AP for OTA (dev machine will serve firmware)
 void initOTAServer() {
-  if (otaServerRunning) return;
+  if (otaPhase != OTA_IDLE) return;
 
   Serial.println("OTA: Starting WiFi AP...");
 
@@ -1526,102 +1497,64 @@ void initOTAServer() {
 
   // IMPORTANT: Start AP on same channel as ESP-NOW (channel 1)
   // Parameters: ssid, password, channel, ssid_hidden, max_connection
-  WiFi.softAP(OTA_AP_SSID, OTA_AP_PASSWORD, ESPNOW_CHANNEL, 0, 4);
+  WiFi.softAP(OTA_AP_SSID, OTA_AP_PASSWORD, ESPNOW_CHANNEL, 0, 30);
 
   IPAddress apIP = WiFi.softAPIP();
   Serial.print("OTA: AP started on channel ");
   Serial.println(ESPNOW_CHANNEL);
   Serial.print("OTA: AP IP: ");
   Serial.println(apIP);
+  Serial.print("OTA: Dev server URL: http://");
+  Serial.print(OTA_DEV_SERVER_IP);
+  Serial.print(":");
+  Serial.print(OTA_DEV_SERVER_PORT);
+  Serial.println("/firmware.bin");
+  Serial.println();
+  Serial.println("=== OTA SETUP INSTRUCTIONS ===");
+  Serial.println("1. Connect dev machine to WiFi AP:");
+  Serial.print("   SSID: ");
+  Serial.println(OTA_AP_SSID);
+  Serial.print("   Password: ");
+  Serial.println(OTA_AP_PASSWORD);
+  Serial.println("2. Run on dev machine: npm run ota:server");
+  Serial.println("3. Tap 'Send Update' on master screen");
+  Serial.println("===============================");
 
-  // Initialize LittleFS
-  if (!LittleFS.begin(true)) {
-    Serial.println("OTA: LittleFS mount failed!");
-    return;
-  }
+  // Set placeholder firmware size (actual size from HTTP headers)
+  firmwareSize = 1000000;
 
-  // Check if firmware file exists
-  if (LittleFS.exists(OTA_FIRMWARE_PATH)) {
-    fs::File file = LittleFS.open(OTA_FIRMWARE_PATH, "r");
-    firmwareSize = file.size();
-    file.close();
-    Serial.print("OTA: Firmware found, size=");
-    Serial.println(firmwareSize);
-  } else {
-    firmwareSize = 0;
-    Serial.println("OTA: No firmware file found. Upload via USB first.");
-  }
-
-  // Set up HTTP routes
-  otaServer.on("/firmware.bin", HTTP_GET, handleFirmwareRequest);
-  otaServer.on("/", HTTP_GET, []() {
-    otaServer.send(200, "text/plain", "Twenty-Four Times OTA Server");
-  });
-
-  otaServer.begin();
-  otaServerRunning = true;
   otaPhase = OTA_READY;
 
-  Serial.println("OTA: HTTP server started on port 80");
-
-  // ESP-NOW should still work in AP_STA mode on the same channel
-  // Don't re-initialize it as that would kill the AP mode!
+  // ESP-NOW remains active in AP_STA mode on the same channel
   Serial.println("OTA: ESP-NOW remains active in AP+STA mode");
 }
 
-// Stop OTA server and return to normal operation
+// Stop OTA WiFi AP and return to normal operation
 void stopOTAServer() {
-  if (!otaServerRunning) return;
+  if (otaPhase == OTA_IDLE) return;
 
-  otaServer.stop();
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
-  otaServerRunning = false;
   otaPhase = OTA_IDLE;
 
   // Re-initialize ESP-NOW
   ESPNowComm::initSender(ESPNOW_CHANNEL);
   ESPNowComm::setReceiveCallback(onMasterPacketReceived);
 
-  Serial.println("OTA: Server stopped");
+  Serial.println("OTA: WiFi AP stopped");
 }
 
-// Start OTA discovery - query which pixels are online
-void startOTADiscovery() {
-  if (firmwareSize == 0) {
-    Serial.println("OTA: No firmware to send!");
-    return;
-  }
-
-  // Clear queue and status
-  otaQueueSize = 0;
-  otaQueueIndex = 0;
+// Broadcast OTA start command to ALL pixels simultaneously
+void sendOTABroadcast() {
+  // Clear status
   for (int i = 0; i < MAX_PIXELS; i++) {
     otaPixelStatus[i] = OTA_STATUS_IDLE;
     otaPixelProgress[i] = 0;
   }
 
-  otaPhase = OTA_DISCOVERING;
-  Serial.println("OTA: Discovering online pixels...");
-
-  // Send version query to all pixels (they'll respond and get added to queue)
-  ESPNowPacket packet;
-  packet.getVersion.command = CMD_GET_VERSION;
-  packet.getVersion.displayOnScreen = false;  // Don't show on screen during OTA
-
-  if (ESPNowComm::sendPacket(&packet, sizeof(GetVersionPacket))) {
-    Serial.println("OTA: Sent discovery query");
-  } else {
-    Serial.println("OTA: Failed to send discovery query!");
-    otaPhase = OTA_READY;
-  }
-}
-
-// Send OTA start command to specific pixel
-void sendOTAStartToPixel(uint8_t pixelId) {
   ESPNowPacket packet;
   packet.otaStart.command = CMD_OTA_START;
-  packet.otaStart.targetPixelId = pixelId;
+  packet.otaStart.targetPixelId = BROADCAST_PIXEL_ID;  // Broadcast to all
 
   // Copy WiFi credentials
   strncpy(packet.otaStart.ssid, OTA_AP_SSID, 31);
@@ -1629,30 +1562,25 @@ void sendOTAStartToPixel(uint8_t pixelId) {
   strncpy(packet.otaStart.password, OTA_AP_PASSWORD, 31);
   packet.otaStart.password[31] = '\0';
 
-  // Build firmware URL using AP IP
-  IPAddress apIP = WiFi.softAPIP();
-  snprintf(packet.otaStart.firmwareUrl, 127, "http://%d.%d.%d.%d/firmware.bin",
-           apIP[0], apIP[1], apIP[2], apIP[3]);
+  // Build firmware URL (dev machine OTA server)
+  snprintf(packet.otaStart.firmwareUrl, 127, "http://%s:%d/firmware.bin",
+           OTA_DEV_SERVER_IP, OTA_DEV_SERVER_PORT);
   packet.otaStart.firmwareUrl[127] = '\0';
 
   packet.otaStart.firmwareSize = firmwareSize;
   packet.otaStart.firmwareCrc32 = 0;  // Skip CRC check for now
 
-  Serial.print("OTA: Sending START to pixel ");
-  Serial.print(pixelId);
-  Serial.print(" - URL: ");
+  Serial.println("OTA: Broadcasting START to all pixels");
+  Serial.print("OTA: URL: ");
   Serial.println(packet.otaStart.firmwareUrl);
 
   if (ESPNowComm::sendPacket(&packet, sizeof(OTAStartPacket))) {
-    otaPixelStatus[pixelId] = OTA_STATUS_STARTING;
-    otaCurrentPixelStartTime = millis();
-    otaLastVersionProbeTime = 0;
-    Serial.print("OTA: Pixel ");
-    Serial.print(pixelId);
-    Serial.println(" started!");
+    otaPhase = OTA_IN_PROGRESS;
+    otaStartTime = millis();
+    Serial.println("OTA: Broadcast sent - all online pixels will update in parallel");
   } else {
-    Serial.print("OTA: Failed to send START to pixel ");
-    Serial.println(pixelId);
+    Serial.println("OTA: Failed to send broadcast!");
+    otaPhase = OTA_READY;
   }
 }
 
@@ -1672,131 +1600,139 @@ void drawOTAScreen() {
   if (otaPhase == OTA_IDLE) {
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
     tft.setCursor(10, 35);
-    tft.println("Update pixel firmware wirelessly.");
-    tft.setCursor(10, 50);
-    tft.println("1. Upload firmware.bin via USB");
-    tft.setCursor(10, 65);
-    tft.println("2. Start server & trigger update");
+    tft.println("Update pixel firmware wirelessly");
+    tft.println();
+    tft.setCursor(10, 60);
+    tft.setTextColor(TFT_YELLOW, COLOR_BG);
+    tft.println("Workflow:");
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setCursor(10, 75);
+    tft.println("1. Tap 'Start Server' below");
+    tft.setCursor(10, 90);
+    tft.println("2. Connect dev PC to WiFi AP");
+    tft.setCursor(10, 105);
+    tft.println("3. Run: npm run ota:server");
+    tft.setCursor(10, 120);
+    tft.println("4. Tap 'Send Update'");
 
     // Start Server button
-    tft.fillRoundRect(60, 100, 200, 50, 8, TFT_DARKGREEN);
+    tft.fillRoundRect(60, 145, 200, 45, 8, TFT_DARKGREEN);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
     tft.setTextSize(2);
-    tft.setCursor(90, 115);
+    tft.setCursor(80, 158);
     tft.println("Start Server");
 
     // Back button
-    tft.fillRoundRect(110, 170, 100, 40, 8, TFT_DARKGREY);
+    tft.fillRoundRect(110, 200, 100, 30, 8, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-    tft.setCursor(135, 180);
+    tft.setTextSize(1);
+    tft.setCursor(140, 208);
     tft.println("Back");
 
   } else if (otaPhase == OTA_READY) {
     tft.setTextColor(TFT_GREEN, COLOR_BG);
-    tft.setCursor(10, 35);
-    tft.print("Server running! SSID: ");
+    tft.setTextSize(2);
+    tft.setCursor(40, 30);
+    tft.println("WiFi AP Ready!");
+
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setCursor(10, 55);
+    tft.print("SSID: ");
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
     tft.println(OTA_AP_SSID);
 
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setCursor(10, 50);
-    tft.print("Firmware size: ");
-    if (firmwareSize > 0) {
-      tft.print(firmwareSize / 1024);
-      tft.println(" KB");
-    } else {
-      tft.setTextColor(TFT_RED, COLOR_BG);
-      tft.println("NOT FOUND!");
-    }
+    tft.setCursor(10, 70);
+    tft.print("Password: ");
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
+    tft.println(OTA_AP_PASSWORD);
 
-    // Send Update button (only if firmware exists)
-    if (firmwareSize > 0) {
-      tft.fillRoundRect(60, 80, 200, 50, 8, TFT_BLUE);
-      tft.setTextColor(TFT_WHITE, TFT_BLUE);
-      tft.setTextSize(2);
-      tft.setCursor(80, 95);
-      tft.println("Send Update");
-    }
+    tft.setTextColor(TFT_YELLOW, COLOR_BG);
+    tft.setCursor(10, 90);
+    tft.println("On dev machine:");
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setCursor(10, 105);
+    tft.println("1. Connect to above WiFi");
+    tft.setCursor(10, 120);
+    tft.println("2. Run: npm run ota:server");
+    tft.setCursor(10, 135);
+    tft.println("3. Tap 'Send Update' below");
 
-    // Stop Server button
-    tft.fillRoundRect(60, 145, 200, 40, 8, TFT_RED);
-    tft.setTextColor(TFT_WHITE, TFT_RED);
+    // Send Update button
+    tft.fillRoundRect(60, 155, 200, 40, 8, TFT_BLUE);
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);
     tft.setTextSize(2);
-    tft.setCursor(95, 155);
-    tft.println("Stop Server");
+    tft.setCursor(75, 165);
+    tft.println("Send Update");
 
     // Back button
-    tft.fillRoundRect(110, 195, 100, 35, 8, TFT_DARKGREY);
+    tft.fillRoundRect(110, 205, 100, 25, 8, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
     tft.setTextSize(1);
-    tft.setCursor(140, 205);
+    tft.setCursor(140, 210);
     tft.println("Back");
-
-  } else if (otaPhase == OTA_DISCOVERING) {
-    tft.setTextColor(TFT_CYAN, COLOR_BG);
-    tft.setTextSize(2);
-    tft.setCursor(30, 35);
-    tft.println("Discovering...");
-
-    tft.setTextSize(1);
-    tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setCursor(10, 65);
-    tft.print("Found ");
-    tft.print(otaQueueSize);
-    tft.println(" online pixels");
-
-    tft.setCursor(10, 85);
-    tft.println("Waiting for responses...");
-
-    // Cancel button
-    tft.fillRoundRect(110, 180, 100, 40, 8, TFT_RED);
-    tft.setTextColor(TFT_WHITE, TFT_RED);
-    tft.setTextSize(2);
-    tft.setCursor(125, 190);
-    tft.println("Cancel");
 
   } else if (otaPhase == OTA_IN_PROGRESS) {
     tft.setTextColor(TFT_YELLOW, COLOR_BG);
-    tft.setTextSize(2);
-    tft.setCursor(20, 35);
-    tft.println("Updating Pixels");
+    tft.setTextSize(3);
+    tft.setCursor(10, 50);
+    tft.println("UPDATING...");
 
     tft.setTextSize(1);
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
 
-    // Count completed
-    int completed = otaQueueIndex;
-    if (otaQueueIndex < otaQueueSize && otaPixelStatus[otaQueue[otaQueueIndex]] == OTA_STATUS_SUCCESS) {
-      completed++;
-    }
+    tft.setCursor(10, 100);
+    tft.println("All online pixels updating");
 
-    tft.setCursor(10, 65);
-    tft.print("Progress: ");
-    tft.print(completed);
-    tft.print(" / ");
-    tft.print(otaQueueSize);
-    tft.println(" pixels");
+    tft.setCursor(10, 120);
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
+    tft.println("Check progress:");
 
-    if (otaQueueIndex < otaQueueSize) {
-      uint8_t currentPixel = otaQueue[otaQueueIndex];
-      tft.setCursor(10, 90);
-      tft.print("Current: Pixel #");
-      tft.println(currentPixel);
+    tft.setCursor(10, 140);
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.println("- Dev server terminal");
+    tft.setCursor(10, 155);
+    tft.println("- Pixel screens");
 
-      tft.setCursor(10, 110);
-      tft.println("Watch pixel screen for progress.");
-      tft.setCursor(10, 125);
-      tft.println("Pixel will reboot when complete.");
+    tft.setCursor(10, 180);
+    tft.setTextColor(TFT_DARKGREY, COLOR_BG);
+    tft.println("Takes ~15-20 seconds...");
 
-      tft.setCursor(10, 145);
-      tft.setTextColor(TFT_DARKGREY, COLOR_BG);
-      tft.println("(~60-90 seconds per pixel)");
-    }
-
-    // Done button (always available to exit)
-    tft.fillRoundRect(110, 180, 100, 40, 8, TFT_DARKGREY);
+    // Done button (available to exit early)
+    tft.fillRoundRect(110, 200, 100, 30, 8, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setTextSize(1);
+    tft.setCursor(140, 208);
+    tft.println("Done");
+
+  } else if (otaPhase == OTA_COMPLETE) {
+    tft.setTextColor(TFT_GREEN, COLOR_BG);
+    tft.setTextSize(3);
+    tft.setCursor(30, 60);
+    tft.println("COMPLETE!");
+
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+
+    tft.setCursor(10, 110);
+    tft.println("Broadcast sent to all pixels");
+
+    tft.setCursor(10, 135);
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
+    tft.println("Check pixel screens to verify");
+    tft.setCursor(10, 150);
+    tft.println("successful updates");
+
+    tft.setCursor(10, 175);
+    tft.setTextColor(TFT_DARKGREY, COLOR_BG);
+    tft.println("Tap 'Done' to return to menu");
+
+    // Done button
+    tft.fillRoundRect(85, 195, 150, 35, 8, TFT_BLUE);
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);
     tft.setTextSize(2);
-    tft.setCursor(135, 190);
+    tft.setCursor(125, 205);
     tft.println("Done");
   }
 }
@@ -1804,51 +1740,46 @@ void drawOTAScreen() {
 // Handle touch in OTA mode
 void handleOTATouch(uint16_t x, uint16_t y) {
   if (otaPhase == OTA_IDLE) {
-    // Start Server button (60, 100, 200, 50)
-    if (x >= 60 && x <= 260 && y >= 100 && y <= 150) {
+    // Start Server button (60, 145, 200, 45)
+    if (x >= 60 && x <= 260 && y >= 145 && y <= 190) {
       initOTAServer();
       drawOTAScreen();
       return;
     }
-    // Back button (110, 170, 100, 40)
-    if (x >= 110 && x <= 210 && y >= 170 && y <= 210) {
+    // Back button (110, 200, 100, 30)
+    if (x >= 110 && x <= 210 && y >= 200 && y <= 230) {
       currentMode = MODE_MENU;
       drawMenu();
       return;
     }
 
   } else if (otaPhase == OTA_READY) {
-    // Send Update button (60, 80, 200, 50) - only if firmware exists
-    if (firmwareSize > 0 && x >= 60 && x <= 260 && y >= 80 && y <= 130) {
-      startOTADiscovery();
+    // Send Update button (60, 155, 200, 40)
+    if (x >= 60 && x <= 260 && y >= 155 && y <= 195) {
+      sendOTABroadcast();
       drawOTAScreen();
       return;
     }
-    // Stop Server button (60, 145, 200, 40)
-    if (x >= 60 && x <= 260 && y >= 145 && y <= 185) {
-      stopOTAServer();
-      drawOTAScreen();
-      return;
-    }
-    // Back button (110, 195, 100, 35)
-    if (x >= 110 && x <= 210 && y >= 195 && y <= 230) {
+    // Back button (110, 205, 100, 25)
+    if (x >= 110 && x <= 210 && y >= 205 && y <= 230) {
       stopOTAServer();
       currentMode = MODE_MENU;
       drawMenu();
       return;
     }
 
-  } else if (otaPhase == OTA_DISCOVERING) {
-    // Cancel button (110, 180, 100, 40)
-    if (x >= 110 && x <= 210 && y >= 180 && y <= 220) {
-      otaPhase = OTA_READY;
-      drawOTAScreen();
+  } else if (otaPhase == OTA_IN_PROGRESS) {
+    // Done button (110, 200, 100, 30)
+    if (x >= 110 && x <= 210 && y >= 200 && y <= 230) {
+      stopOTAServer();
+      currentMode = MODE_MENU;
+      drawMenu();
       return;
     }
 
-  } else if (otaPhase == OTA_IN_PROGRESS) {
-    // Done button (110, 180, 100, 40)
-    if (x >= 110 && x <= 210 && y >= 180 && y <= 220) {
+  } else if (otaPhase == OTA_COMPLETE) {
+    // Done button (85, 195, 150, 35)
+    if (x >= 85 && x <= 235 && y >= 195 && y <= 230) {
       stopOTAServer();
       currentMode = MODE_MENU;
       drawMenu();
@@ -1872,50 +1803,6 @@ void handleVersionResponse(const VersionResponsePacket& resp) {
     Serial.print(resp.versionMajor);
     Serial.print(".");
     Serial.println(resp.versionMinor);
-
-    // If we're discovering pixels for OTA, add to queue
-    if (otaPhase == OTA_DISCOVERING) {
-      // Check if already in queue
-      bool alreadyQueued = false;
-      for (uint8_t i = 0; i < otaQueueSize; i++) {
-        if (otaQueue[i] == resp.pixelId) {
-          alreadyQueued = true;
-          break;
-        }
-      }
-
-      if (!alreadyQueued && otaQueueSize < MAX_PIXELS) {
-        otaQueue[otaQueueSize++] = resp.pixelId;
-        Serial.print("OTA: Added pixel ");
-        Serial.print(resp.pixelId);
-        Serial.print(" to queue (");
-        Serial.print(otaQueueSize);
-        Serial.println(" total)");
-        otaScreenNeedsRedraw = true;
-      }
-    }
-
-    // If we're updating pixels and this is the current pixel, it just came back online!
-    if (otaPhase == OTA_IN_PROGRESS && otaQueueIndex < otaQueueSize) {
-      if (resp.pixelId == otaQueue[otaQueueIndex]) {
-        // Only treat this as completion if enough time has elapsed.
-        // This prevents a late discovery response from being mistaken as a reboot/completion signal.
-        unsigned long elapsed = millis() - otaCurrentPixelStartTime;
-        if (elapsed >= OTA_REBOOT_DETECT_TIME) {
-          Serial.print("OTA: Pixel ");
-          Serial.print(resp.pixelId);
-          Serial.println(" responded after OTA window -> marking SUCCESS");
-          otaPixelStatus[resp.pixelId] = OTA_STATUS_SUCCESS;
-          otaScreenNeedsRedraw = true;
-        } else {
-          Serial.print("OTA: Ignoring early version response from current pixel ");
-          Serial.print(resp.pixelId);
-          Serial.print(" (");
-          Serial.print(elapsed);
-          Serial.println("ms) - likely late discovery reply");
-        }
-      }
-    }
 
     // Set flag to redraw from main loop (don't draw from callback/interrupt)
     if (currentMode == MODE_VERSION) {
@@ -2323,109 +2210,23 @@ void loop() {
         drawOTAScreen();
       }
 
-      // Handle HTTP server requests when running
-      if (otaServerRunning) {
-        otaServer.handleClient();
-      }
+      // Simple timeout to automatically show COMPLETE screen after ~30 seconds
+      // (gives pixels time to download, flash, and reboot)
+      if (otaPhase == OTA_IN_PROGRESS) {
+        unsigned long elapsed = currentTime - otaStartTime;
 
-      // Discovery phase - wait for responses, then start sequential updates
-      if (otaPhase == OTA_DISCOVERING) {
-        // Wait 3 seconds for all pixels to respond
-        static unsigned long discoveryStartTime = 0;
-        if (discoveryStartTime == 0) {
-          discoveryStartTime = currentTime;
-        }
+        // Auto-complete after 30 seconds (pixels should be done by then)
+        if (elapsed >= 30000) {
+          Serial.println();
+          Serial.println("===== OTA BROADCAST COMPLETE =====");
+          Serial.print("Broadcast sent to all pixels");
+          Serial.print("Total time: ");
+          Serial.print((millis() - otaStartTime) / 1000);
+          Serial.println(" seconds");
+          Serial.println("==================================");
 
-        if (currentTime - discoveryStartTime >= 3000) {
-          discoveryStartTime = 0;
-
-          if (otaQueueSize > 0) {
-            Serial.print("OTA: Discovery complete - found ");
-            Serial.print(otaQueueSize);
-            Serial.println(" pixels");
-            Serial.print("OTA: Queue: ");
-            for (uint8_t i = 0; i < otaQueueSize; i++) {
-              Serial.print(otaQueue[i]);
-              if (i < otaQueueSize - 1) Serial.print(", ");
-            }
-            Serial.println();
-
-            // Start with first pixel
-            otaPhase = OTA_IN_PROGRESS;
-            otaQueueIndex = 0;
-            sendOTAStartToPixel(otaQueue[0]);
-            drawOTAScreen();
-          } else {
-            Serial.println("OTA: No pixels responded to discovery!");
-            otaPhase = OTA_READY;
-            drawOTAScreen();
-          }
-        }
-      }
-
-      // Sequential update phase - monitor current pixel and advance queue
-      if (otaPhase == OTA_IN_PROGRESS && otaQueueIndex < otaQueueSize) {
-        uint8_t currentPixel = otaQueue[otaQueueIndex];
-        OTAStatus status = (OTAStatus)otaPixelStatus[currentPixel];
-        unsigned long elapsed = currentTime - otaCurrentPixelStartTime;
-
-        // Probe for the pixel coming back online after reboot.
-        // Pixels disable ESP-NOW during the actual download, so we won't see progress.
-        // Once they reboot, they can respond to GET_VERSION again.
-        if (status != OTA_STATUS_SUCCESS && status != OTA_STATUS_ERROR) {
-          if (elapsed >= OTA_REBOOT_DETECT_TIME) {
-            if (otaLastVersionProbeTime == 0 || (currentTime - otaLastVersionProbeTime) >= OTA_VERSION_PROBE_INTERVAL) {
-              ESPNowPacket probe;
-              probe.getVersion.command = CMD_GET_VERSION;
-              probe.getVersion.displayOnScreen = false;
-              ESPNowComm::sendPacket(&probe, sizeof(GetVersionPacket));
-              otaLastVersionProbeTime = currentTime;
-            }
-          }
-        }
-
-        // Pixel is considered done if:
-        // 1. Status is SUCCESS (pixel came back online after reboot)
-        // 2. Status is ERROR (received error ACK)
-        // 3. Timeout after 120 seconds (safety fallback)
-        bool pixelDone = false;
-        bool pixelSuccess = false;
-
-        if (status == OTA_STATUS_SUCCESS) {
-          pixelDone = true;
-          pixelSuccess = true;
-        } else if (status == OTA_STATUS_ERROR) {
-          pixelDone = true;
-          pixelSuccess = false;
-        } else if (elapsed > OTA_PIXEL_TIMEOUT) {
-          // Safety timeout - assume failure
-          pixelDone = true;
-          pixelSuccess = false;
-          otaPixelStatus[currentPixel] = OTA_STATUS_ERROR;
-          Serial.print("OTA: Pixel ");
-          Serial.print(currentPixel);
-          Serial.println(" TIMEOUT after 120 seconds!");
-        }
-
-        if (pixelDone) {
-          Serial.print("OTA: Pixel ");
-          Serial.print(currentPixel);
-          Serial.print(" finished with status ");
-          Serial.println(pixelSuccess ? "SUCCESS" : "ERROR");
-
-          // Move to next pixel
-          otaQueueIndex++;
-          if (otaQueueIndex < otaQueueSize) {
-            Serial.print("OTA: Starting next pixel in queue: ");
-            Serial.println(otaQueue[otaQueueIndex]);
-            delay(2000);  // Brief pause between pixels
-            sendOTAStartToPixel(otaQueue[otaQueueIndex]);
-            drawOTAScreen();
-          } else {
-            Serial.println("OTA: All pixels complete!");
-            otaPhase = OTA_COMPLETE;
-            drawOTAScreen();
-          }
+          otaPhase = OTA_COMPLETE;
+          drawOTAScreen();
         }
       }
       break;

@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 5
+#define FIRMWARE_VERSION_MINOR 10
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -755,8 +755,8 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
     case CMD_OTA_START: {
       const OTAStartPacket& start = packet->otaStart;
 
-      // Only respond if this command is for us
-      if (start.targetPixelId != pixelId) {
+      // Only respond if this command is for us or broadcast to all (0xFF)
+      if (start.targetPixelId != pixelId && start.targetPixelId != 0xFF) {
         break;  // Ignore - not for this pixel
       }
 
