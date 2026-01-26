@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 7
+#define FIRMWARE_VERSION_MINOR 8
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -1628,23 +1628,33 @@ void drawOTAScreen() {
   if (otaPhase == OTA_IDLE) {
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
     tft.setCursor(10, 35);
-    tft.println("Update pixel firmware wirelessly.");
-    tft.setCursor(10, 50);
-    tft.println("1. Upload firmware.bin via USB");
-    tft.setCursor(10, 65);
-    tft.println("2. Start server & trigger update");
+    tft.println("Update pixel firmware wirelessly");
+    tft.println();
+    tft.setCursor(10, 60);
+    tft.setTextColor(TFT_YELLOW, COLOR_BG);
+    tft.println("Workflow:");
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setCursor(10, 75);
+    tft.println("1. Tap 'Start Server' below");
+    tft.setCursor(10, 90);
+    tft.println("2. Connect dev PC to WiFi AP");
+    tft.setCursor(10, 105);
+    tft.println("3. Run: npm run ota:server");
+    tft.setCursor(10, 120);
+    tft.println("4. Tap 'Send Update'");
 
     // Start Server button
-    tft.fillRoundRect(60, 100, 200, 50, 8, TFT_DARKGREEN);
+    tft.fillRoundRect(60, 145, 200, 45, 8, TFT_DARKGREEN);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
     tft.setTextSize(2);
-    tft.setCursor(90, 115);
+    tft.setCursor(80, 158);
     tft.println("Start Server");
 
     // Back button
-    tft.fillRoundRect(110, 170, 100, 40, 8, TFT_DARKGREY);
+    tft.fillRoundRect(110, 200, 100, 30, 8, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-    tft.setCursor(135, 180);
+    tft.setTextSize(1);
+    tft.setCursor(140, 208);
     tft.println("Back");
 
   } else if (otaPhase == OTA_READY) {
@@ -1777,20 +1787,69 @@ void drawOTAScreen() {
     tft.setTextSize(1);
     tft.setCursor(140, 205);
     tft.println("Done");
+
+  } else if (otaPhase == OTA_COMPLETE) {
+    tft.setTextColor(TFT_GREEN, COLOR_BG);
+    tft.setTextSize(3);
+    tft.setCursor(50, 50);
+    tft.println("COMPLETE!");
+
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+
+    // Count results
+    uint8_t successCount = 0;
+    uint8_t errorCount = 0;
+    for (uint8_t i = 0; i < otaQueueSize; i++) {
+      uint8_t pixelId = otaQueue[i];
+      OTAStatus status = (OTAStatus)otaPixelStatus[pixelId];
+      if (status == OTA_STATUS_SUCCESS) {
+        successCount++;
+      } else if (status == OTA_STATUS_ERROR) {
+        errorCount++;
+      }
+    }
+
+    tft.setCursor(10, 100);
+    tft.print("Total pixels: ");
+    tft.println(otaQueueSize);
+
+    tft.setCursor(10, 120);
+    tft.setTextColor(TFT_GREEN, COLOR_BG);
+    tft.print("Successful: ");
+    tft.println(successCount);
+
+    if (errorCount > 0) {
+      tft.setCursor(10, 140);
+      tft.setTextColor(TFT_RED, COLOR_BG);
+      tft.print("Failed: ");
+      tft.println(errorCount);
+    }
+
+    tft.setCursor(10, 165);
+    tft.setTextColor(TFT_DARKGREY, COLOR_BG);
+    tft.println("Tap 'Done' to return to menu");
+
+    // Done button
+    tft.fillRoundRect(85, 190, 150, 40, 8, TFT_BLUE);
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+    tft.setTextSize(2);
+    tft.setCursor(125, 202);
+    tft.println("Done");
   }
 }
 
 // Handle touch in OTA mode
 void handleOTATouch(uint16_t x, uint16_t y) {
   if (otaPhase == OTA_IDLE) {
-    // Start Server button (60, 100, 200, 50)
-    if (x >= 60 && x <= 260 && y >= 100 && y <= 150) {
+    // Start Server button (60, 145, 200, 45)
+    if (x >= 60 && x <= 260 && y >= 145 && y <= 190) {
       initOTAServer();
       drawOTAScreen();
       return;
     }
-    // Back button (110, 170, 100, 40)
-    if (x >= 110 && x <= 210 && y >= 170 && y <= 210) {
+    // Back button (110, 200, 100, 30)
+    if (x >= 110 && x <= 210 && y >= 200 && y <= 230) {
       currentMode = MODE_MENU;
       drawMenu();
       return;
@@ -1822,6 +1881,15 @@ void handleOTATouch(uint16_t x, uint16_t y) {
   } else if (otaPhase == OTA_IN_PROGRESS) {
     // Done button (110, 195, 100, 35)
     if (x >= 110 && x <= 210 && y >= 195 && y <= 230) {
+      stopOTAServer();
+      currentMode = MODE_MENU;
+      drawMenu();
+      return;
+    }
+
+  } else if (otaPhase == OTA_COMPLETE) {
+    // Done button (85, 190, 150, 40)
+    if (x >= 85 && x <= 235 && y >= 190 && y <= 230) {
       stopOTAServer();
       currentMode = MODE_MENU;
       drawMenu();
