@@ -752,13 +752,6 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       break;
     }
 
-    case CMD_OTA_NOTIFY: {
-      // Deprecated - kept for backward compatibility
-      // New flow uses CMD_OTA_START for sequential orchestration
-      Serial.println("ESP-NOW: OTA notify received (deprecated - use CMD_OTA_START)");
-      break;
-    }
-
     case CMD_OTA_START: {
       const OTAStartPacket& start = packet->otaStart;
 

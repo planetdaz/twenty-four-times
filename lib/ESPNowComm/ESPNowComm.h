@@ -32,11 +32,10 @@ enum CommandType : uint8_t {
                               //       Either integrate into provisioning UI or remove.
   CMD_DISCOVERY = 0x06,       // Master requests pixels to respond with MAC
   CMD_HIGHLIGHT = 0x07,       // Highlight a specific pixel during assignment
-  CMD_OTA_NOTIFY = 0x08,      // Notify pixels that OTA firmware is available (deprecated - use CMD_OTA_START)
-  CMD_OTA_ACK = 0x09,         // Pixel acknowledges OTA command (response)
-  CMD_GET_VERSION = 0x0A,     // Request pixels to display their version
-  CMD_VERSION_RESPONSE = 0x0B,// Pixel responds with version info
-  CMD_OTA_START = 0x0C        // Tell specific pixel to start OTA download (sequential orchestration)
+  CMD_OTA_ACK = 0x08,         // Pixel acknowledges OTA command (response)
+  CMD_GET_VERSION = 0x09,     // Request pixels to display their version
+  CMD_VERSION_RESPONSE = 0x0A,// Pixel responds with version info
+  CMD_OTA_START = 0x0B        // Tell specific pixel to start OTA download (sequential orchestration)
 };
 
 // Transition/easing types (matches pixel's EasingType enum)
@@ -285,17 +284,6 @@ enum OTAStatus : uint8_t {
   OTA_STATUS_ERROR = 6           // OTA failed
 };
 
-// OTA notify packet - master tells pixels to start OTA update
-// Pixels will connect to master's WiFi AP and download firmware from HTTP server
-struct __attribute__((packed)) OTANotifyPacket {
-  CommandType command;           // CMD_OTA_NOTIFY
-  char ssid[32];                 // WiFi SSID to connect to (master's AP)
-  char password[32];             // WiFi password
-  char firmwareUrl[128];         // Full URL to firmware binary (e.g., "http://192.168.4.1/firmware.bin")
-  uint32_t firmwareSize;         // Expected firmware size in bytes
-  uint32_t firmwareCrc32;        // CRC32 checksum for verification (optional, 0 = skip check)
-};
-
 // OTA start packet - master tells specific pixel to start downloading NOW
 struct __attribute__((packed)) OTAStartPacket {
   CommandType command;           // CMD_OTA_START
@@ -342,7 +330,6 @@ union ESPNowPacket {
   DiscoveryCommandPacket discovery;
   DiscoveryResponsePacket discoveryResponse;
   HighlightPacket highlight;
-  OTANotifyPacket otaNotify;
   OTAStartPacket otaStart;
   OTAAckPacket otaAck;
   GetVersionPacket getVersion;
