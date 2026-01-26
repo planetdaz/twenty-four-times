@@ -2305,12 +2305,7 @@ void loop() {
         drawOTAScreen();
       }
 
-      // Handle HTTP server requests when running
-      if (otaServerRunning) {
-        otaServer.handleClient();
-      }
-
-      // Discovery phase - wait for responses, then start sequential updates
+      // Discovery phase - wait for responses, then start parallel updates
       if (otaPhase == OTA_DISCOVERING) {
         // Wait 3 seconds for all pixels to respond
         static unsigned long discoveryStartTime = 0;
