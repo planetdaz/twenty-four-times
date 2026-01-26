@@ -6,38 +6,42 @@ The new OTA workflow uses your development machine as the HTTP server instead of
 
 ## Quick Start
 
-### 1. Build and Start Dev Server
-
-```bash
-npm run ota:dev
-```
-
-This will:
-- Build the pixel firmware (`pixel_s3` target)
-- Start a Node.js HTTP server on port 3000
-- Display connection instructions
-
-### 2. Connect to Master's WiFi
-
-When you see the server output, connect your computer to the WiFi AP created by the master:
-
-- **SSID**: `TwentyFourTimes`
-- **Password**: `clockupdate`
-
-Your computer should get IP `192.168.4.2` (verify in the terminal output).
-
-### 3. Trigger OTA on Master
+### 1. Trigger OTA on Master FIRST
 
 On the master touchscreen:
 1. Tap **OTA**
-2. Tap **Start Server** (master creates WiFi AP)
-3. Tap **Send Update** (master sends OTA command to all pixels)
+2. Tap **Start Server**
+   - Master creates WiFi AP with SSID `TwentyFourTimes`
+   - Screen shows connection instructions
 
-### 4. Watch the Magic
+### 2. Connect Dev Machine to Master's WiFi
+
+Connect your computer to the WiFi AP:
+- **SSID**: `TwentyFourTimes`
+- **Password**: `clockupdate`
+
+**Note**: You can keep ethernet connected - Windows will use both simultaneously.
+
+### 3. Start Dev Server
+
+```bash
+npm run ota:server
+```
+
+This starts a Node.js HTTP server on port 3000. Verify in the terminal that:
+- Your WiFi IP is `192.168.4.2` (or note the actual IP)
+- The server is listening
+
+### 4. Trigger OTA Update
+
+On the master touchscreen:
+- Tap **Send Update**
+
+### 5. Watch the Magic
 
 All 24 pixels will:
-- Connect to the WiFi AP
-- Download firmware simultaneously from your dev machine
+- Connect to the WiFi AP simultaneously
+- Download firmware in parallel from your dev machine
 - Flash and reboot (~15 seconds total)
 
 The Node.js terminal will show each download in real-time.
@@ -56,27 +60,31 @@ Dev Machine (192.168.4.2:3000)
    Master ESP32 ←--ESP-NOW-→ Pixels (24x)
 ```
 
+## Alternative: Build + Server in One Command
+
+If you need to build firmware first:
+
+```bash
+npm run ota:dev
+```
+
+This will:
+1. Build the pixel firmware (`pixel_s3` target)
+2. Start the OTA server
+
+Then follow steps 1-5 above.
+
 ## Configuration
 
-Edit `src/master.cpp` to customize:
+Edit `src/master.cpp` to customize the dev server IP/port:
 
 ```cpp
 // Dev machine OTA server configuration
 const char* OTA_DEV_SERVER_IP = "192.168.4.2";
 const uint16_t OTA_DEV_SERVER_PORT = 3000;
-const bool USE_DEV_OTA_SERVER = true;  // Set false for legacy mode
 ```
 
-## Legacy Mode (Master as Server)
-
-To revert to the old sequential workflow where master serves firmware:
-
-1. Set `USE_DEV_OTA_SERVER = false` in `src/master.cpp`
-2. Build and upload master firmware
-3. Use `npm run ota:full` to upload firmware to master's LittleFS
-4. Trigger OTA normally (no dev machine needed)
-
-**Note**: Legacy mode updates one pixel at a time (~2 min each).
+**Note**: The default IP `192.168.4.2` is the typical first DHCP assignment on the master's AP. If your machine gets a different IP, update this constant and rebuild the master firmware.
 
 ## Troubleshooting
 
@@ -105,10 +113,11 @@ If downloads are still slow:
 
 | Script | Description |
 |--------|-------------|
-| `npm run ota:dev` | Build firmware + start dev server (recommended) |
-| `npm run ota:server` | Just start dev server (firmware must exist) |
+| `npm run ota:server` | **Recommended**: Start dev OTA server |
+| `npm run ota:dev` | Build pixel firmware + start server |
 | `npm run build:pixel` | Build pixel firmware only |
-| `npm run ota:full` | Legacy: build + upload to master's LittleFS |
+| `npm run build:master` | Build master firmware only |
+| `npm run upload:master` | Upload master firmware via USB |
 
 ## Technical Details
 
