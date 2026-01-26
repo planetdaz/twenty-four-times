@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 11
+#define FIRMWARE_VERSION_MINOR 12
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -448,6 +448,10 @@ bool identifyMode = false;  // If true, show pixel ID on screen
 // ---- Version Mode State ----
 bool versionMode = false;  // If true, show version info on screen
 
+// ---- Highlight Mode State ----
+bool highlightMode = false;  // If true, show highlight state on screen
+HighlightState currentHighlightState = HIGHLIGHT_IDLE;
+
 // ---- ESP-NOW Packet Handler ----
 
 // Called when an ESP-NOW packet is received
@@ -473,9 +477,10 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
         break;
       }
 
-      // Exit identify/version mode when we receive a new command
+      // Exit identify/version/highlight mode when we receive a new command
       identifyMode = false;
       versionMode = false;
+      highlightMode = false;
 
       // Extract angles for this pixel
       float target1, target2, target3;
@@ -714,44 +719,9 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
         Serial.print("ESP-NOW: Highlight state ");
         Serial.println(cmd.state);
 
-        switch (cmd.state) {
-          case HIGHLIGHT_IDLE:
-            // Green bg, white "?"
-            canvas->fillScreen(0x07E0);  // Green
-            canvas->setTextColor(GC9A01A_WHITE);
-            canvas->setTextSize(15);
-            canvas->setCursor(85, 90);
-            canvas->print("?");
-            break;
-
-          case HIGHLIGHT_SELECTED:
-            // Blue border, black bg, yellow "?"
-            canvas->fillScreen(GC9A01A_BLACK);
-            // Draw blue border (thick circle outline)
-            for (int r = 115; r < 120; r++) {
-              canvas->drawCircle(CENTER_X, CENTER_Y, r, 0x001F);  // Blue
-            }
-            canvas->setTextColor(0xFFE0);  // Yellow
-            canvas->setTextSize(15);
-            canvas->setCursor(85, 90);
-            canvas->print("?");
-            break;
-
-          case HIGHLIGHT_ASSIGNED:
-            // Green checkmark on black bg
-            canvas->fillScreen(GC9A01A_BLACK);
-            canvas->setTextColor(0x07E0);  // Green
-            canvas->setTextSize(12);
-            canvas->setCursor(70, 80);
-            canvas->print("OK");  // Simple "OK" instead of checkmark symbol
-            // Also show the assigned ID below
-            canvas->setTextSize(6);
-            canvas->setCursor(pixelId < 10 ? 100 : 85, 150);
-            canvas->print(pixelId);
-            break;
-        }
-
-        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        // Enter highlight mode and store the state
+        highlightMode = true;
+        currentHighlightState = cmd.state;
       }
       break;
     }
@@ -1294,6 +1264,54 @@ void loop() {
     canvas->println(FIRMWARE_VERSION_MINOR);
 
     // Present version frame to display
+    tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    // Small delay and return (skip normal rendering)
+    delay(100);
+    return;
+  }
+
+  // ---- Highlight Mode Display ----
+  // If in highlight mode, show highlight state and skip normal rendering
+  if (highlightMode) {
+    switch (currentHighlightState) {
+      case HIGHLIGHT_IDLE:
+        // Green bg, white "?"
+        canvas->fillScreen(0x07E0);  // Green
+        canvas->setTextColor(GC9A01A_WHITE);
+        canvas->setTextSize(15);
+        canvas->setCursor(85, 90);
+        canvas->print("?");
+        break;
+
+      case HIGHLIGHT_SELECTED:
+        // Blue border, black bg, yellow "?"
+        canvas->fillScreen(GC9A01A_BLACK);
+        // Draw blue border (thick circle outline)
+        for (int r = 115; r < 120; r++) {
+          canvas->drawCircle(CENTER_X, CENTER_Y, r, 0x001F);  // Blue
+        }
+        canvas->setTextColor(0xFFE0);  // Yellow
+        canvas->setTextSize(15);
+        canvas->setCursor(85, 90);
+        canvas->print("?");
+        break;
+
+      case HIGHLIGHT_ASSIGNED:
+        // Green checkmark on black bg
+        canvas->fillScreen(GC9A01A_BLACK);
+        canvas->setTextColor(0x07E0);  // Green
+        canvas->setTextSize(12);
+        canvas->setCursor(70, 80);
+        canvas->print("OK");  // Simple "OK" instead of checkmark symbol
+        // Also show the assigned ID below
+        canvas->setTextSize(6);
+        canvas->setCursor(pixelId < 10 ? 100 : 85, 150);
+        canvas->print(pixelId);
+        break;
+    }
+
+    // Present highlight frame to display
     tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
     // Small delay and return (skip normal rendering)

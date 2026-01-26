@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 11
+#define FIRMWARE_VERSION_MINOR 12
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
