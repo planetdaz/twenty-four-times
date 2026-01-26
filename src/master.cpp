@@ -244,9 +244,10 @@ bool autoCycleDirection = true;     // true = 0->99, false = 99->0
 unsigned long lastAutoCycleTime = 0;
 
 // Manual digit entry variables
-uint8_t manualLeftDigit = 0;        // Left digit (0-9, 10=colon, 11=space)
-uint8_t manualRightDigit = 0;       // Right digit (0-9, 10=colon, 11=space)
-bool editingLeftDigit = true;       // Which digit is being edited
+uint8_t pendingDigits[2] = {255, 255};  // 255 = not set, 0-9 = digit, 10 = colon, 11 = space
+uint8_t pendingCount = 0;               // How many digits entered (0, 1, or 2)
+uint8_t lastSentLeft = 11;              // Last sent left digit (11 = space)
+uint8_t lastSentRight = 11;             // Last sent right digit (11 = space)
 
 // ===== FUNCTION DECLARATIONS =====
 void sendPing();
@@ -875,54 +876,55 @@ void drawDigitsScreen() {
   tft.drawString("Digits Mode", 160, 5);
   tft.setTextDatum(TL_DATUM);
 
-  // Show current two-digit number with highlighting
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(20, 28);
-  tft.print("Number:");
-
-  // Left digit - highlighted if editing
-  uint16_t leftBg = editingLeftDigit ? TFT_CYAN : TFT_DARKGREY;
-  tft.fillRoundRect(90, 23, 40, 30, 4, leftBg);
-  tft.setTextColor(TFT_BLACK, leftBg);
-  tft.setTextSize(3);
-  tft.setCursor(105, 28);
-  if (manualLeftDigit == 10) {
-    tft.print(":");
-  } else if (manualLeftDigit == 11) {
-    tft.print(" ");
-  } else {
-    tft.print(manualLeftDigit);
-  }
-
-  // Right digit - highlighted if editing
-  uint16_t rightBg = !editingLeftDigit ? TFT_CYAN : TFT_DARKGREY;
-  tft.fillRoundRect(135, 23, 40, 30, 4, rightBg);
-  tft.setTextColor(TFT_BLACK, rightBg);
-  tft.setTextSize(3);
-  tft.setCursor(150, 28);
-  if (manualRightDigit == 10) {
-    tft.print(":");
-  } else if (manualRightDigit == 11) {
-    tft.print(" ");
-  } else {
-    tft.print(manualRightDigit);
-  }
-
-  // Toggle button to switch between editing left/right
-  tft.fillRoundRect(185, 23, 60, 30, 4, TFT_ORANGE);
-  tft.setTextColor(TFT_WHITE, TFT_ORANGE);
-  tft.setTextSize(1);
-  tft.setCursor(195, 30);
-  tft.print(editingLeftDigit ? "L" : "R");
-  tft.print(" Edit");
-
-  // Send button
-  tft.fillRoundRect(255, 23, 55, 30, 4, TFT_GREEN);
-  tft.setTextColor(TFT_WHITE, TFT_GREEN);
+  // Show pending digit entry and last sent
   tft.setTextSize(2);
-  tft.setCursor(265, 28);
-  tft.print("SEND");
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(10, 28);
+  tft.print("Number: ");
+
+  // Show pending first digit (or underscore)
+  if (pendingCount == 0) {
+    tft.print("_");
+  } else if (pendingDigits[0] == 10) {
+    tft.print(":");
+  } else if (pendingDigits[0] == 11) {
+    tft.print(" ");
+  } else {
+    tft.print(pendingDigits[0]);
+  }
+
+  tft.print(" ");
+
+  // Show pending second digit (or underscore)
+  if (pendingCount < 2) {
+    tft.print("_");
+  } else if (pendingDigits[1] == 10) {
+    tft.print(":");
+  } else if (pendingDigits[1] == 11) {
+    tft.print(" ");
+  } else {
+    tft.print(pendingDigits[1]);
+  }
+
+  // Show last sent number
+  tft.setTextColor(TFT_CYAN, COLOR_BG);
+  tft.setCursor(180, 28);
+  tft.print("Last: ");
+  if (lastSentLeft == 10) {
+    tft.print(":");
+  } else if (lastSentLeft == 11) {
+    tft.print(" ");
+  } else {
+    tft.print(lastSentLeft);
+  }
+  tft.print(" ");
+  if (lastSentRight == 10) {
+    tft.print(":");
+  } else if (lastSentRight == 11) {
+    tft.print(" ");
+  } else {
+    tft.print(lastSentRight);
+  }
 
   // Draw number buttons in a 2x5 grid
   // Top row: 0-4
@@ -1034,30 +1036,31 @@ void drawDigitsScreen() {
 }
 
 void handleDigitsTouch(uint16_t x, uint16_t y) {
-  // Toggle button (185, 23, 60, 30)
-  if (x >= 185 && x <= 245 && y >= 23 && y <= 53) {
-    editingLeftDigit = !editingLeftDigit;
-    drawDigitsScreen();
-    return;
-  }
+  // Helper function to add a digit and maybe send
+  auto addDigit = [](uint8_t digit) {
+    pendingDigits[pendingCount] = digit;
+    pendingCount++;
 
-  // Send button (255, 23, 55, 30)
-  if (x >= 255 && x <= 310 && y >= 23 && y <= 53) {
-    sendTwoDigitPattern(manualLeftDigit, manualRightDigit);
-    return;
-  }
+    if (pendingCount == 2) {
+      // Send the two-digit pattern
+      sendTwoDigitPattern(pendingDigits[0], pendingDigits[1]);
+      lastSentLeft = pendingDigits[0];
+      lastSentRight = pendingDigits[1];
+      // Reset for next entry
+      pendingDigits[0] = 255;
+      pendingDigits[1] = 255;
+      pendingCount = 0;
+    }
+
+    drawDigitsScreen();
+  };
 
   // Check digit buttons (0-4, top row)
   if (y >= 45 && y <= 85) {
     for (int i = 0; i <= 4; i++) {
       int buttonX = 10 + i * 60;
       if (x >= buttonX && x <= buttonX + 50) {
-        if (editingLeftDigit) {
-          manualLeftDigit = i;
-        } else {
-          manualRightDigit = i;
-        }
-        drawDigitsScreen();
+        addDigit(i);
         return;
       }
     }
@@ -1068,12 +1071,7 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
     for (int i = 5; i <= 9; i++) {
       int buttonX = 10 + (i - 5) * 60;
       if (x >= buttonX && x <= buttonX + 50) {
-        if (editingLeftDigit) {
-          manualLeftDigit = i;
-        } else {
-          manualRightDigit = i;
-        }
-        drawDigitsScreen();
+        addDigit(i);
         return;
       }
     }
@@ -1083,22 +1081,12 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
   if (y >= 145 && y <= 185) {
     // Colon button
     if (x >= 10 && x <= 60) {
-      if (editingLeftDigit) {
-        manualLeftDigit = 10;  // 10 = colon
-      } else {
-        manualRightDigit = 10;
-      }
-      drawDigitsScreen();
+      addDigit(10);  // 10 = colon
       return;
     }
     // Space button
     if (x >= 70 && x <= 120) {
-      if (editingLeftDigit) {
-        manualLeftDigit = 11;  // 11 = space
-      } else {
-        manualRightDigit = 11;
-      }
-      drawDigitsScreen();
+      addDigit(11);  // 11 = space
       return;
     }
     // Auto-cycle toggle button
@@ -1109,6 +1097,10 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
         autoCycleNumber = 0;
         autoCycleDirection = true;
         lastAutoCycleTime = millis();
+        // Clear any pending manual entry
+        pendingDigits[0] = 255;
+        pendingDigits[1] = 255;
+        pendingCount = 0;
       }
       drawDigitsScreen();
       return;
@@ -1920,6 +1912,11 @@ void loop() {
           uint8_t leftDigit = autoCycleNumber / 10;   // Tens digit
           uint8_t rightDigit = autoCycleNumber % 10;  // Ones digit
           sendTwoDigitPattern(leftDigit, rightDigit);
+
+          // Update last sent display
+          lastSentLeft = leftDigit;
+          lastSentRight = rightDigit;
+          drawDigitsScreen();  // Update display to show new "Last:" value
 
           // Update number for next cycle (bounces 0->99->0)
           if (autoCycleDirection) {
