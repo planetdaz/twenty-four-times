@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 8
+#define FIRMWARE_VERSION_MINOR 9
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -1726,66 +1726,37 @@ void drawOTAScreen() {
 
   } else if (otaPhase == OTA_IN_PROGRESS) {
     tft.setTextColor(TFT_YELLOW, COLOR_BG);
-    tft.setTextSize(2);
-    tft.setCursor(5, 35);
-    tft.println("Updating In Parallel");
+    tft.setTextSize(3);
+    tft.setCursor(10, 50);
+    tft.println("UPDATING...");
 
     tft.setTextSize(1);
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
 
-    // Count completed pixels
-    uint8_t completedCount = 0;
-    uint8_t successCount = 0;
-    uint8_t errorCount = 0;
-    for (uint8_t i = 0; i < otaQueueSize; i++) {
-      uint8_t pixelId = otaQueue[i];
-      OTAStatus status = (OTAStatus)otaPixelStatus[pixelId];
-      if (status == OTA_STATUS_SUCCESS) {
-        completedCount++;
-        successCount++;
-      } else if (status == OTA_STATUS_ERROR) {
-        completedCount++;
-        errorCount++;
-      }
-    }
+    tft.setCursor(10, 100);
+    tft.print("Updating ");
+    tft.print(otaQueueSize);
+    tft.println(" pixels in parallel");
 
-    tft.setCursor(10, 65);
-    tft.setTextColor(TFT_GREEN, COLOR_BG);
-    tft.print("Completed: ");
-    tft.print(completedCount);
-    tft.print(" / ");
-    tft.println(otaQueueSize);
+    tft.setCursor(10, 120);
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
+    tft.println("Check progress:");
 
-    tft.setCursor(10, 85);
+    tft.setCursor(10, 140);
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.print("In Progress: ");
-    tft.println(otaQueueSize - completedCount);
+    tft.println("- Dev server terminal");
+    tft.setCursor(10, 155);
+    tft.println("- Pixel screens");
 
-    if (successCount > 0) {
-      tft.setCursor(10, 105);
-      tft.setTextColor(TFT_GREEN, COLOR_BG);
-      tft.print("Success: ");
-      tft.println(successCount);
-    }
-
-    if (errorCount > 0) {
-      tft.setCursor(10, 125);
-      tft.setTextColor(TFT_RED, COLOR_BG);
-      tft.print("Failed: ");
-      tft.println(errorCount);
-    }
-
-    tft.setCursor(10, 150);
+    tft.setCursor(10, 180);
     tft.setTextColor(TFT_DARKGREY, COLOR_BG);
-    tft.println("All pixels downloading from");
-    tft.setCursor(10, 165);
-    tft.println("dev machine simultaneously...");
+    tft.println("Takes ~15-20 seconds...");
 
-    // Done button (always available to exit)
-    tft.fillRoundRect(110, 195, 100, 35, 8, TFT_DARKGREY);
+    // Done button (available to exit early)
+    tft.fillRoundRect(110, 200, 100, 30, 8, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
     tft.setTextSize(1);
-    tft.setCursor(140, 205);
+    tft.setCursor(140, 208);
     tft.println("Done");
 
   } else if (otaPhase == OTA_COMPLETE) {
@@ -1879,8 +1850,8 @@ void handleOTATouch(uint16_t x, uint16_t y) {
     }
 
   } else if (otaPhase == OTA_IN_PROGRESS) {
-    // Done button (110, 195, 100, 35)
-    if (x >= 110 && x <= 210 && y >= 195 && y <= 230) {
+    // Done button (110, 200, 100, 30)
+    if (x >= 110 && x <= 210 && y >= 200 && y <= 230) {
       stopOTAServer();
       currentMode = MODE_MENU;
       drawMenu();
