@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 14
+#define FIRMWARE_VERSION_MINOR 15
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -242,6 +242,11 @@ bool autoCycleEnabled = false;
 uint8_t autoCycleNumber = 0;        // Current number (0-99)
 bool autoCycleDirection = true;     // true = 0->99, false = 99->0
 unsigned long lastAutoCycleTime = 0;
+
+// Manual digit entry variables
+uint8_t manualLeftDigit = 0;        // Left digit (0-9, 10=colon, 11=space)
+uint8_t manualRightDigit = 0;       // Right digit (0-9, 10=colon, 11=space)
+bool editingLeftDigit = true;       // Which digit is being edited
 
 // ===== FUNCTION DECLARATIONS =====
 void sendPing();
@@ -870,10 +875,54 @@ void drawDigitsScreen() {
   tft.drawString("Digits Mode", 160, 5);
   tft.setTextDatum(TL_DATUM);
 
+  // Show current two-digit number with highlighting
   tft.setTextSize(1);
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setCursor(70, 25);
-  tft.println("Touch a digit to display:");
+  tft.setCursor(20, 28);
+  tft.print("Number:");
+
+  // Left digit - highlighted if editing
+  uint16_t leftBg = editingLeftDigit ? TFT_CYAN : TFT_DARKGREY;
+  tft.fillRoundRect(90, 23, 40, 30, 4, leftBg);
+  tft.setTextColor(TFT_BLACK, leftBg);
+  tft.setTextSize(3);
+  tft.setCursor(105, 28);
+  if (manualLeftDigit == 10) {
+    tft.print(":");
+  } else if (manualLeftDigit == 11) {
+    tft.print(" ");
+  } else {
+    tft.print(manualLeftDigit);
+  }
+
+  // Right digit - highlighted if editing
+  uint16_t rightBg = !editingLeftDigit ? TFT_CYAN : TFT_DARKGREY;
+  tft.fillRoundRect(135, 23, 40, 30, 4, rightBg);
+  tft.setTextColor(TFT_BLACK, rightBg);
+  tft.setTextSize(3);
+  tft.setCursor(150, 28);
+  if (manualRightDigit == 10) {
+    tft.print(":");
+  } else if (manualRightDigit == 11) {
+    tft.print(" ");
+  } else {
+    tft.print(manualRightDigit);
+  }
+
+  // Toggle button to switch between editing left/right
+  tft.fillRoundRect(185, 23, 60, 30, 4, TFT_ORANGE);
+  tft.setTextColor(TFT_WHITE, TFT_ORANGE);
+  tft.setTextSize(1);
+  tft.setCursor(195, 30);
+  tft.print(editingLeftDigit ? "L" : "R");
+  tft.print(" Edit");
+
+  // Send button
+  tft.fillRoundRect(255, 23, 55, 30, 4, TFT_GREEN);
+  tft.setTextColor(TFT_WHITE, TFT_GREEN);
+  tft.setTextSize(2);
+  tft.setCursor(265, 28);
+  tft.print("SEND");
 
   // Draw number buttons in a 2x5 grid
   // Top row: 0-4
@@ -985,23 +1034,46 @@ void drawDigitsScreen() {
 }
 
 void handleDigitsTouch(uint16_t x, uint16_t y) {
-  // Check digit buttons (0-4, top row) - shows as "X " (digit left, space right)
+  // Toggle button (185, 23, 60, 30)
+  if (x >= 185 && x <= 245 && y >= 23 && y <= 53) {
+    editingLeftDigit = !editingLeftDigit;
+    drawDigitsScreen();
+    return;
+  }
+
+  // Send button (255, 23, 55, 30)
+  if (x >= 255 && x <= 310 && y >= 23 && y <= 53) {
+    sendTwoDigitPattern(manualLeftDigit, manualRightDigit);
+    return;
+  }
+
+  // Check digit buttons (0-4, top row)
   if (y >= 45 && y <= 85) {
     for (int i = 0; i <= 4; i++) {
       int buttonX = 10 + i * 60;
       if (x >= buttonX && x <= buttonX + 50) {
-        sendTwoDigitPattern(i, 11);  // digit on left, space on right
+        if (editingLeftDigit) {
+          manualLeftDigit = i;
+        } else {
+          manualRightDigit = i;
+        }
+        drawDigitsScreen();
         return;
       }
     }
   }
 
-  // Check digit buttons (5-9, bottom row) - shows as "X " (digit left, space right)
+  // Check digit buttons (5-9, bottom row)
   if (y >= 95 && y <= 135) {
     for (int i = 5; i <= 9; i++) {
       int buttonX = 10 + (i - 5) * 60;
       if (x >= buttonX && x <= buttonX + 50) {
-        sendTwoDigitPattern(i, 11);  // digit on left, space on right
+        if (editingLeftDigit) {
+          manualLeftDigit = i;
+        } else {
+          manualRightDigit = i;
+        }
+        drawDigitsScreen();
         return;
       }
     }
@@ -1009,14 +1081,24 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
 
   // Check special character buttons
   if (y >= 145 && y <= 185) {
-    // Colon button - shows ": " (colon left, space right)
+    // Colon button
     if (x >= 10 && x <= 60) {
-      sendTwoDigitPattern(10, 11);  // colon on left, space on right
+      if (editingLeftDigit) {
+        manualLeftDigit = 10;  // 10 = colon
+      } else {
+        manualRightDigit = 10;
+      }
+      drawDigitsScreen();
       return;
     }
-    // Space button - shows "  " (space both)
+    // Space button
     if (x >= 70 && x <= 120) {
-      sendTwoDigitPattern(11, 11);  // space on both
+      if (editingLeftDigit) {
+        manualLeftDigit = 11;  // 11 = space
+      } else {
+        manualRightDigit = 11;
+      }
+      drawDigitsScreen();
       return;
     }
     // Auto-cycle toggle button
