@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 12
+#define FIRMWARE_VERSION_MINOR 13
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -442,9 +442,6 @@ uint16_t blendColor(uint16_t bgColor, uint16_t fgColor, uint8_t opacity) {
   return (outR << 11) | (outG << 5) | outB;
 }
 
-// ---- Identify Mode State ----
-bool identifyMode = false;  // If true, show pixel ID on screen
-
 // ---- Version Mode State ----
 bool versionMode = false;  // If true, show version info on screen
 
@@ -477,8 +474,7 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
         break;
       }
 
-      // Exit identify/version/highlight mode when we receive a new command
-      identifyMode = false;
+      // Exit version/highlight mode when we receive a new command
       versionMode = false;
       highlightMode = false;
 
@@ -592,19 +588,6 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       Serial.print(colorIndex);
       Serial.print(" opacity=");
       Serial.println(targetOpacity);
-      break;
-    }
-
-    // TODO: CMD_IDENTIFY is currently unused - master uses CMD_HIGHLIGHT instead.
-    //       Either integrate into provisioning UI or remove.
-    case CMD_IDENTIFY: {
-      const IdentifyPacket& cmd = packet->identify;
-      // Check if this command is for us (or for all pixels)
-      if (cmd.pixelId == pixelId || cmd.pixelId == 255) {
-        identifyMode = true;
-        Serial.print("ESP-NOW: Identify mode activated for pixel ");
-        Serial.println(pixelId);
-      }
       break;
     }
 
@@ -1222,28 +1205,6 @@ void loop() {
     tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
     // Slow update rate - just waiting for provisioning
-    delay(100);
-    return;
-  }
-
-  // ---- Identify Mode Display ----
-  // If in identify mode, show pixel ID and skip normal rendering
-  if (identifyMode) {
-    canvas->fillScreen(GC9A01A_BLUE);
-
-    // Draw large pixel ID in the center
-    canvas->setTextColor(GC9A01A_WHITE);
-    canvas->setTextSize(15);  // Very large text
-
-    // Center the text (approximate positioning for single/double digit)
-    int xPos = (pixelId < 10) ? 85 : 55;
-    canvas->setCursor(xPos, 90);
-    canvas->print(pixelId);
-
-    // Present identify frame to display
-    tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
-
-    // Small delay and return (skip normal rendering)
     delay(100);
     return;
   }

@@ -27,9 +27,6 @@ enum CommandType : uint8_t {
   CMD_PING = 0x02,            // Heartbeat/connectivity test
   CMD_RESET = 0x03,           // Reset all pixels to default state
   CMD_SET_PIXEL_ID = 0x04,    // Assign pixel ID (for provisioning)
-  CMD_IDENTIFY = 0x05,        // Show pixel ID on screen (for identification)
-                              // TODO: Currently unused - master uses CMD_HIGHLIGHT instead.
-                              //       Either integrate into provisioning UI or remove.
   CMD_DISCOVERY = 0x06,       // Master requests pixels to respond with MAC
   CMD_HIGHLIGHT = 0x07,       // Highlight a specific pixel during assignment
   CMD_OTA_ACK = 0x08,         // Pixel acknowledges OTA command (response)
@@ -225,12 +222,6 @@ struct __attribute__((packed)) PingPacket {
   uint32_t timestamp;   // Sender's millis()
 };
 
-// Identify packet - tells a pixel to show its ID
-struct __attribute__((packed)) IdentifyPacket {
-  CommandType command;  // CMD_IDENTIFY
-  uint8_t pixelId;      // Which pixel to identify (0-23, or 255 for all)
-};
-
 // Set pixel ID packet - assigns a persistent ID to a pixel (for provisioning)
 // Master sends this to a specific MAC address during provisioning
 struct __attribute__((packed)) SetPixelIdPacket {
@@ -325,7 +316,6 @@ union ESPNowPacket {
   CommandType command;
   AngleCommandPacket angleCmd;
   PingPacket ping;
-  IdentifyPacket identify;
   SetPixelIdPacket setPixelId;
   DiscoveryCommandPacket discovery;
   DiscoveryResponsePacket discoveryResponse;
