@@ -678,13 +678,23 @@ void drawProvisionScreen() {
       tft.println(discoveredIds[selectedMacIndex]);
     }
 
-    // Show next ID to assign
+    // Show next ID to assign with +/- buttons
     tft.setTextColor(TFT_CYAN, COLOR_BG);
     tft.setTextSize(2);
     tft.setCursor(10, 95);
     tft.print("Assign ID: ");
     tft.setTextSize(3);
-    tft.println(nextIdToAssign);
+    tft.print(nextIdToAssign);
+
+    // +/- buttons for adjusting ID
+    tft.fillRoundRect(145, 92, 30, 25, 4, TFT_DARKGREY);
+    tft.fillRoundRect(180, 92, 30, 25, 4, TFT_DARKGREY);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    tft.setTextSize(2);
+    tft.setCursor(155, 97);
+    tft.print("-");
+    tft.setCursor(190, 97);
+    tft.print("+");
 
     // Prev/Next buttons
     tft.fillRoundRect(10, 140, 60, 35, 4, TFT_DARKBLUE);
@@ -697,17 +707,11 @@ void drawProvisionScreen() {
     tft.setCursor(90, 148);
     tft.println("Next");
 
-    // Assign button
-    tft.fillRoundRect(160, 140, 70, 35, 4, TFT_DARKGREEN);
+    // Assign button (expanded to fill the space)
+    tft.fillRoundRect(160, 140, 150, 35, 4, TFT_DARKGREEN);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-    tft.setCursor(165, 148);
+    tft.setCursor(205, 148);
     tft.println("Assign");
-
-    // Skip button
-    tft.fillRoundRect(240, 140, 70, 35, 4, TFT_ORANGE);
-    tft.setTextColor(TFT_WHITE, TFT_ORANGE);
-    tft.setCursor(255, 148);
-    tft.println("Skip");
 
     // Back button
     tft.fillRoundRect(10, 190, 80, 35, 4, TFT_DARKGREY);
@@ -764,6 +768,24 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
     }
 
   } else if (provisionPhase == PHASE_ASSIGNING) {
+    // ID decrement button (145, 92, 30, 25)
+    if (x >= 145 && x <= 175 && y >= 92 && y <= 117) {
+      if (nextIdToAssign > 0) {
+        nextIdToAssign--;
+        drawProvisionScreen();
+      }
+      return;
+    }
+
+    // ID increment button (180, 92, 30, 25)
+    if (x >= 180 && x <= 210 && y >= 92 && y <= 117) {
+      if (nextIdToAssign < 23) {
+        nextIdToAssign++;
+        drawProvisionScreen();
+      }
+      return;
+    }
+
     // Prev button (10, 140, 60, 35)
     if (x >= 10 && x <= 70 && y >= 140 && y <= 175) {
       // Un-highlight current
@@ -792,8 +814,8 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
       return;
     }
 
-    // Assign button (160, 140, 70, 35)
-    if (x >= 160 && x <= 230 && y >= 140 && y <= 175) {
+    // Assign button (160, 140, 150, 35)
+    if (x >= 160 && x <= 310 && y >= 140 && y <= 175) {
       // Assign the ID
       sendAssignIdCommand(discoveredMacs[selectedMacIndex], nextIdToAssign);
       // Update local state
@@ -807,18 +829,6 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
         selectedMacIndex++;
         sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
       }
-      drawProvisionScreen();
-      return;
-    }
-
-    // Skip button (240, 140, 70, 35)
-    if (x >= 240 && x <= 310 && y >= 140 && y <= 175) {
-      // Un-highlight current
-      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
-      // Move to next without assigning
-      selectedMacIndex = (selectedMacIndex + 1) % discoveredCount;
-      // Highlight new selection
-      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
       drawProvisionScreen();
       return;
     }

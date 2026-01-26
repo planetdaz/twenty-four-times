@@ -644,6 +644,9 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
     case CMD_DISCOVERY: {
       const DiscoveryCommandPacket& cmd = packet->discovery;
 
+      // Exit version mode when entering provision mode
+      versionMode = false;
+
       // Get this device's MAC address
       uint8_t myMac[6];
       WiFi.macAddress(myMac);
@@ -1235,39 +1238,71 @@ void loop() {
   // ---- Highlight Mode Display ----
   // If in highlight mode, show highlight state and skip normal rendering
   if (highlightMode) {
+    // Get MAC address for display
+    uint8_t myMac[6];
+    WiFi.macAddress(myMac);
+    char macStr[18];
+    sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
+            myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5]);
+
     switch (currentHighlightState) {
       case HIGHLIGHT_IDLE:
-        // Green bg, white "?"
+        // Green bg, show MAC and current ID
         canvas->fillScreen(0x07E0);  // Green
         canvas->setTextColor(GC9A01A_WHITE);
-        canvas->setTextSize(15);
-        canvas->setCursor(85, 90);
-        canvas->print("?");
+        canvas->setTextSize(2);
+        canvas->setCursor(20, 60);
+        canvas->print("MAC:");
+        canvas->setCursor(10, 85);
+        canvas->print(macStr);
+        canvas->setCursor(50, 130);
+        canvas->print("ID: ");
+        if (pixelId == PIXEL_ID_UNPROVISIONED) {
+          canvas->print("?");
+        } else {
+          canvas->print(pixelId);
+        }
         break;
 
       case HIGHLIGHT_SELECTED:
-        // Blue border, black bg, yellow "?"
+        // Blue border, black bg, show MAC and current ID in yellow
         canvas->fillScreen(GC9A01A_BLACK);
         // Draw blue border (thick circle outline)
         for (int r = 115; r < 120; r++) {
           canvas->drawCircle(CENTER_X, CENTER_Y, r, 0x001F);  // Blue
         }
         canvas->setTextColor(0xFFE0);  // Yellow
-        canvas->setTextSize(15);
-        canvas->setCursor(85, 90);
-        canvas->print("?");
+        canvas->setTextSize(2);
+        canvas->setCursor(35, 50);
+        canvas->print("SELECTED");
+        canvas->setTextSize(2);
+        canvas->setCursor(20, 90);
+        canvas->print("MAC:");
+        canvas->setCursor(10, 115);
+        canvas->print(macStr);
+        canvas->setCursor(50, 160);
+        canvas->print("ID: ");
+        if (pixelId == PIXEL_ID_UNPROVISIONED) {
+          canvas->print("?");
+        } else {
+          canvas->print(pixelId);
+        }
         break;
 
       case HIGHLIGHT_ASSIGNED:
-        // Green checkmark on black bg
+        // Black bg, show OK and assigned ID
         canvas->fillScreen(GC9A01A_BLACK);
         canvas->setTextColor(0x07E0);  // Green
-        canvas->setTextSize(12);
-        canvas->setCursor(70, 80);
-        canvas->print("OK");  // Simple "OK" instead of checkmark symbol
-        // Also show the assigned ID below
-        canvas->setTextSize(6);
-        canvas->setCursor(pixelId < 10 ? 100 : 85, 150);
+        canvas->setTextSize(4);
+        canvas->setCursor(80, 60);
+        canvas->print("OK");
+        canvas->setTextSize(2);
+        canvas->setCursor(20, 110);
+        canvas->print("MAC:");
+        canvas->setCursor(10, 135);
+        canvas->print(macStr);
+        canvas->setCursor(40, 180);
+        canvas->print("ID: ");
         canvas->print(pixelId);
         break;
     }
