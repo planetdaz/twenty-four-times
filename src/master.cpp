@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 15
+#define FIRMWARE_VERSION_MINOR 16
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -535,6 +535,12 @@ void onMasterPacketReceived(const ESPNowPacket* packet, size_t len) {
         Serial.print(resp.currentId);
       }
       Serial.println(")");
+
+      // Send HIGHLIGHT_DISCOVERY_FOUND to show "!" on the pixel
+      uint8_t mac[6];
+      memcpy(mac, resp.mac, 6);
+      sendHighlightCommand(mac, HIGHLIGHT_DISCOVERY_FOUND);
+      Serial.println("Sent HIGHLIGHT_DISCOVERY_FOUND to pixel");
     }
   } else if (packet->command == CMD_OTA_ACK) {
     handleOTAAck(packet->otaAck);
@@ -577,6 +583,14 @@ void sendHighlightCommand(uint8_t* targetMac, HighlightState state) {
   ESPNowComm::sendPacket(&packet, sizeof(HighlightPacket));
 }
 
+// Send highlight command to all discovered pixels
+void sendHighlightToAll(HighlightState state) {
+  for (uint8_t i = 0; i < discoveredCount; i++) {
+    sendHighlightCommand(discoveredMacs[i], state);
+    delay(5);  // Small delay to avoid flooding
+  }
+}
+
 // Send pixel ID assignment command
 void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId) {
   ESPNowPacket packet;
@@ -588,6 +602,21 @@ void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId) {
     Serial.print("Assigned ID ");
     Serial.print(newId);
     Serial.println(" to pixel");
+  }
+}
+
+// Factory reset all pixel IDs (broadcast unprovisioned state)
+void sendFactoryResetIds() {
+  ESPNowPacket packet;
+  packet.setPixelId.command = CMD_SET_PIXEL_ID;
+  // Use broadcast MAC to target all pixels
+  memcpy(packet.setPixelId.targetMac, BROADCAST_MAC, 6);
+  packet.setPixelId.pixelId = PIXEL_ID_UNPROVISIONED;
+
+  if (ESPNowComm::sendPacket(&packet, sizeof(SetPixelIdPacket))) {
+    Serial.println("Factory reset broadcast sent - all pixel IDs reset to unprovisioned");
+  } else {
+    Serial.println("Failed to send factory reset");
   }
 }
 
@@ -609,7 +638,7 @@ void drawProvisionScreen() {
     tft.setCursor(10, 40);
     tft.println("Discover and assign IDs to pixels.");
     tft.setCursor(10, 55);
-    tft.println("Pixels will flash during discovery.");
+    tft.println("Pixels will display ? then ! when found.");
 
     // Start Discovery button
     tft.fillRoundRect(60, 90, 200, 50, 8, TFT_DARKGREEN);
@@ -618,11 +647,20 @@ void drawProvisionScreen() {
     tft.setCursor(75, 105);
     tft.println("Start Discovery");
 
+    // Factory Reset button (small, red, for testing)
+    tft.fillRoundRect(10, 150, 150, 35, 4, TFT_RED);
+    tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.setTextSize(1);
+    tft.setCursor(15, 160);
+    tft.println("Reset All IDs");
+    tft.setCursor(15, 172);
+    tft.println("(for testing)");
+
     // Back button
-    tft.fillRoundRect(110, 170, 100, 40, 8, TFT_DARKGREY);
+    tft.fillRoundRect(200, 150, 110, 35, 4, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
     tft.setTextSize(2);
-    tft.setCursor(135, 180);
+    tft.setCursor(230, 158);
     tft.println("Back");
 
   } else if (provisionPhase == PHASE_DISCOVERING) {
@@ -751,8 +789,37 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
       return;
     }
 
-    // Back button (110, 170, 100, 40)
-    if (x >= 110 && x <= 210 && y >= 170 && y <= 210) {
+    // Factory Reset button (10, 150, 150, 35)
+    if (x >= 10 && x <= 160 && y >= 150 && y <= 185) {
+      // Show confirmation on screen
+      tft.fillScreen(TFT_RED);
+      tft.setTextColor(TFT_WHITE, TFT_RED);
+      tft.setTextSize(2);
+      tft.setCursor(40, 100);
+      tft.println("Resetting IDs...");
+
+      // Send factory reset command
+      sendFactoryResetIds();
+
+      // Wait a moment
+      delay(1000);
+
+      // Show confirmation
+      tft.fillScreen(TFT_GREEN);
+      tft.setTextColor(TFT_WHITE, TFT_GREEN);
+      tft.setCursor(60, 100);
+      tft.println("IDs Reset!");
+      delay(1000);
+
+      // Redraw provision screen
+      drawProvisionScreen();
+      return;
+    }
+
+    // Back button (200, 150, 110, 35)
+    if (x >= 200 && x <= 310 && y >= 150 && y <= 185) {
+      // Send reset to clear any lingering highlight modes
+      sendReset();
       currentMode = MODE_MENU;
       drawMenu();
       return;
@@ -761,6 +828,10 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
   } else if (provisionPhase == PHASE_DISCOVERING) {
     // Stop button (20, 160, 130, 50)
     if (x >= 20 && x <= 150 && y >= 160 && y <= 210) {
+      // Clear highlight mode on all discovered pixels
+      sendHighlightToAll(HIGHLIGHT_IDLE);
+      // Also need to exit highlight mode on pixels, so send a command to turn off highlight
+      // Actually, let's just leave them showing "!" until assignment or exit
       provisionPhase = PHASE_IDLE;
       drawProvisionScreen();
       return;
@@ -768,10 +839,39 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
 
     // Assign button (170, 160, 130, 50)
     if (x >= 170 && x <= 300 && y >= 160 && y <= 210 && discoveredCount > 0) {
+      // Sort discovered pixels by current ID (low to high, treating unprovisioned as 0)
+      // Simple bubble sort since we only have max 24 items
+      for (uint8_t i = 0; i < discoveredCount - 1; i++) {
+        for (uint8_t j = 0; j < discoveredCount - i - 1; j++) {
+          // Treat PIXEL_ID_UNPROVISIONED (255) as 0 for sorting
+          uint8_t id1 = (discoveredIds[j] == PIXEL_ID_UNPROVISIONED) ? 0 : discoveredIds[j];
+          uint8_t id2 = (discoveredIds[j + 1] == PIXEL_ID_UNPROVISIONED) ? 0 : discoveredIds[j + 1];
+
+          if (id1 > id2) {
+            // Swap MACs
+            uint8_t tempMac[6];
+            memcpy(tempMac, discoveredMacs[j], 6);
+            memcpy(discoveredMacs[j], discoveredMacs[j + 1], 6);
+            memcpy(discoveredMacs[j + 1], tempMac, 6);
+
+            // Swap IDs
+            uint8_t tempId = discoveredIds[j];
+            discoveredIds[j] = discoveredIds[j + 1];
+            discoveredIds[j + 1] = tempId;
+          }
+        }
+      }
+      Serial.println("Sorted discovered pixels by ID");
+
       provisionPhase = PHASE_ASSIGNING;
       selectedMacIndex = 0;
       nextIdToAssign = 0;
-      // Highlight the first pixel
+      // Initialize all pixels: send IDLE to all, then SELECTED to the first
+      for (uint8_t i = 0; i < discoveredCount; i++) {
+        sendHighlightCommand(discoveredMacs[i], HIGHLIGHT_IDLE);
+        delay(5);  // Small delay to avoid flooding
+      }
+      // Highlight the selected pixel
       sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
       drawProvisionScreen();
       return;
@@ -845,8 +945,11 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
 
     // Back button (10, 190, 80, 35)
     if (x >= 10 && x <= 90 && y >= 190 && y <= 225) {
-      // Un-highlight current
-      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      // Send reset to clear highlight modes, then send discovery found to all
+      sendReset();
+      delay(50);  // Give pixels time to process reset
+      // Re-show "!" on all discovered pixels
+      sendHighlightToAll(HIGHLIGHT_DISCOVERY_FOUND);
       provisionPhase = PHASE_DISCOVERING;
       drawProvisionScreen();
       return;
@@ -854,8 +957,8 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
 
     // Done button (230, 190, 80, 35)
     if (x >= 230 && x <= 310 && y >= 190 && y <= 225) {
-      // Un-highlight current
-      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      // Send reset to clear all highlight modes
+      sendReset();
       provisionPhase = PHASE_IDLE;
       currentMode = MODE_MENU;
       drawMenu();
@@ -1222,6 +1325,18 @@ void sendPing() {
     Serial.println("Ping sent to keep pixels alive");
   } else {
     Serial.println("Failed to send ping");
+  }
+}
+
+// Send reset command to all pixels (clears special modes)
+void sendReset() {
+  ESPNowPacket packet;
+  packet.command = CMD_RESET;
+
+  if (ESPNowComm::sendPacket(&packet, sizeof(CommandType))) {
+    Serial.println("Reset sent to all pixels");
+  } else {
+    Serial.println("Failed to send reset");
   }
 }
 

@@ -250,9 +250,11 @@ struct __attribute__((packed)) DiscoveryResponsePacket {
 
 // Highlight states for provisioning UI
 enum HighlightState : uint8_t {
-  HIGHLIGHT_IDLE = 0,      // Green bg, white "?" - waiting
-  HIGHLIGHT_SELECTED = 1,  // Blue border, black bg, yellow "?" - currently selected
-  HIGHLIGHT_ASSIGNED = 2   // Green checkmark on black bg - assignment complete
+  HIGHLIGHT_IDLE = 0,              // Blue border, white text - idle state in assignment
+  HIGHLIGHT_SELECTED = 1,          // Green bg - currently selected in assignment
+  HIGHLIGHT_ASSIGNED = 2,          // Green "OK" text - assignment complete
+  HIGHLIGHT_DISCOVERY_WAITING = 3, // White "?" on black - waiting to be discovered
+  HIGHLIGHT_DISCOVERY_FOUND = 4    // White "!" on black - discovered, waiting for assignment
 };
 
 // Highlight packet - visual feedback during assignment phase
