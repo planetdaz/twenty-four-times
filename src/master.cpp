@@ -251,6 +251,7 @@ uint8_t lastSentRight = 11;             // Last sent right digit (11 = space)
 
 // ===== FUNCTION DECLARATIONS =====
 void sendPing();
+void sendReset();
 void drawDigitsScreen();
 void handleDigitsTouch(uint16_t x, uint16_t y);
 void sendTwoDigitPattern(uint8_t leftDigit, uint8_t rightDigit);
@@ -260,7 +261,9 @@ void drawProvisionScreen();
 void handleProvisionTouch(uint16_t x, uint16_t y);
 void sendDiscoveryCommand();
 void sendHighlightCommand(uint8_t* targetMac, HighlightState state);
+void sendHighlightToAll(HighlightState state);
 void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId);
+void sendFactoryResetIds();
 // OTA functions
 void initOTAServer();
 void stopOTAServer();
