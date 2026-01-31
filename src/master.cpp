@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 16
+#define FIRMWARE_VERSION_MINOR 17
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -137,6 +137,8 @@ OTAPhase otaPhase = OTA_IDLE;
 uint32_t firmwareSize = 0;
 uint8_t otaPixelStatus[MAX_PIXELS];  // Status of each pixel (OTAStatus enum)
 uint8_t otaPixelProgress[MAX_PIXELS]; // Progress of each pixel (0-100)
+bool otaTargetAll = true;          // true = all pixels, false = specific
+uint8_t otaTargetPixelId = 0;      // Target pixel (0-23) when !otaTargetAll
 
 // Parallel OTA orchestration
 unsigned long otaStartTime = 0;      // When OTA broadcast was sent
@@ -269,7 +271,7 @@ void initOTAServer();
 void stopOTAServer();
 void drawOTAScreen();
 void handleOTATouch(uint16_t x, uint16_t y);
-void sendOTABroadcast();
+void sendOTAUpdate();
 void handleOTAAck(const OTAAckPacket& ack);
 // Version functions
 void drawVersionScreen();
@@ -1424,17 +1426,22 @@ void stopOTAServer() {
   Serial.println("OTA: WiFi AP stopped");
 }
 
-// Broadcast OTA start command to ALL pixels simultaneously
-void sendOTABroadcast() {
-  // Clear status
-  for (int i = 0; i < MAX_PIXELS; i++) {
-    otaPixelStatus[i] = OTA_STATUS_IDLE;
-    otaPixelProgress[i] = 0;
+// Send OTA start command to either all pixels or a specific pixel
+void sendOTAUpdate() {
+  // Clear status - only for targeted pixel(s)
+  if (otaTargetAll) {
+    for (int i = 0; i < MAX_PIXELS; i++) {
+      otaPixelStatus[i] = OTA_STATUS_IDLE;
+      otaPixelProgress[i] = 0;
+    }
+  } else {
+    otaPixelStatus[otaTargetPixelId] = OTA_STATUS_IDLE;
+    otaPixelProgress[otaTargetPixelId] = 0;
   }
 
   ESPNowPacket packet;
   packet.otaStart.command = CMD_OTA_START;
-  packet.otaStart.targetPixelId = BROADCAST_PIXEL_ID;  // Broadcast to all
+  packet.otaStart.targetPixelId = otaTargetAll ? BROADCAST_PIXEL_ID : otaTargetPixelId;
 
   // Copy WiFi credentials
   strncpy(packet.otaStart.ssid, OTA_AP_SSID, 31);
@@ -1450,16 +1457,26 @@ void sendOTABroadcast() {
   packet.otaStart.firmwareSize = firmwareSize;
   packet.otaStart.firmwareCrc32 = 0;  // Skip CRC check for now
 
-  Serial.println("OTA: Broadcasting START to all pixels");
+  if (otaTargetAll) {
+    Serial.println("OTA: Broadcasting START to all pixels");
+  } else {
+    Serial.print("OTA: Sending START to pixel ");
+    Serial.println(otaTargetPixelId);
+  }
   Serial.print("OTA: URL: ");
   Serial.println(packet.otaStart.firmwareUrl);
 
   if (ESPNowComm::sendPacket(&packet, sizeof(OTAStartPacket))) {
     otaPhase = OTA_IN_PROGRESS;
     otaStartTime = millis();
-    Serial.println("OTA: Broadcast sent - all online pixels will update in parallel");
+    if (otaTargetAll) {
+      Serial.println("OTA: Broadcast sent - all online pixels will update in parallel");
+    } else {
+      Serial.print("OTA: Update sent to pixel ");
+      Serial.println(otaTargetPixelId);
+    }
   } else {
-    Serial.println("OTA: Failed to send broadcast!");
+    Serial.println("OTA: Failed to send update!");
     otaPhase = OTA_READY;
   }
 }
@@ -1515,42 +1532,74 @@ void drawOTAScreen() {
     tft.setCursor(40, 30);
     tft.println("WiFi AP Ready!");
 
+    // Condensed WiFi credentials and instructions
     tft.setTextSize(1);
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
     tft.setCursor(10, 55);
-    tft.print("SSID: ");
+    tft.print("WiFi: ");
     tft.setTextColor(TFT_CYAN, COLOR_BG);
-    tft.println(OTA_AP_SSID);
-
+    tft.print(OTA_AP_SSID);
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setCursor(10, 70);
-    tft.print("Password: ");
+    tft.print(" / ");
     tft.setTextColor(TFT_CYAN, COLOR_BG);
     tft.println(OTA_AP_PASSWORD);
 
-    tft.setTextColor(TFT_YELLOW, COLOR_BG);
-    tft.setCursor(10, 90);
-    tft.println("On dev machine:");
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setCursor(10, 105);
-    tft.println("1. Connect to above WiFi");
-    tft.setCursor(10, 120);
-    tft.println("2. Run: npm run ota:server");
-    tft.setCursor(10, 135);
-    tft.println("3. Tap 'Send Update' below");
+    tft.setCursor(10, 70);
+    tft.println("Run: npm run ota:server, then tap Send Update");
 
-    // Send Update button
-    tft.fillRoundRect(60, 155, 200, 40, 8, TFT_BLUE);
-    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+    // "Update All" button
+    uint16_t allButtonColor = otaTargetAll ? TFT_BLUE : TFT_DARKGREY;
+    tft.fillRoundRect(10, 90, 100, 30, 4, allButtonColor);
+    tft.setTextColor(TFT_WHITE, allButtonColor);
+    tft.setTextSize(1);
+    tft.setCursor(20, 100);
+    tft.println("Update All");
+
+    // "Send Update" button (right side)
+    tft.fillRoundRect(120, 90, 190, 30, 4, TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
     tft.setTextSize(2);
-    tft.setCursor(75, 165);
+    tft.setCursor(140, 95);
     tft.println("Send Update");
 
-    // Back button
-    tft.fillRoundRect(110, 205, 100, 25, 8, TFT_DARKGREY);
+    // Draw pixel grid (6 columns × 4 rows)
+    int cellW = 50;
+    int cellH = 22;
+    int startX = 5;
+    int startY = 120;
+    int cols = 6;
+
+    for (int i = 0; i < MAX_PIXELS; i++) {
+      int col = i % cols;
+      int row = i / cols;
+      int x = startX + col * cellW;
+      int y = startY + row * cellH;
+
+      // Determine cell color
+      uint16_t bgColor = TFT_BLACK;
+      uint16_t borderColor = TFT_DARKGREY;
+      if (!otaTargetAll && i == otaTargetPixelId) {
+        bgColor = TFT_BLUE;
+        borderColor = TFT_BLUE;
+      }
+
+      // Draw cell
+      tft.fillRoundRect(x, y, cellW - 2, cellH - 2, 3, bgColor);
+      tft.drawRoundRect(x, y, cellW - 2, cellH - 2, 3, borderColor);
+
+      // Draw pixel ID
+      tft.setTextColor(TFT_WHITE, bgColor);
+      tft.setTextSize(1);
+      tft.setCursor(x + (i < 10 ? 20 : 16), y + 7);
+      tft.print(i);
+    }
+
+    // Back button (bottom right)
+    tft.fillRoundRect(240, 215, 70, 20, 4, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
     tft.setTextSize(1);
-    tft.setCursor(140, 210);
+    tft.setCursor(255, 218);
     tft.println("Back");
 
   } else if (otaPhase == OTA_IN_PROGRESS) {
@@ -1563,7 +1612,13 @@ void drawOTAScreen() {
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
 
     tft.setCursor(10, 100);
-    tft.println("All online pixels updating");
+    if (otaTargetAll) {
+      tft.println("All online pixels updating");
+    } else {
+      tft.print("Updating pixel ");
+      tft.print(otaTargetPixelId);
+      tft.println("...");
+    }
 
     tft.setCursor(10, 120);
     tft.setTextColor(TFT_CYAN, COLOR_BG);
@@ -1596,7 +1651,12 @@ void drawOTAScreen() {
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
 
     tft.setCursor(10, 110);
-    tft.println("Broadcast sent to all pixels");
+    if (otaTargetAll) {
+      tft.println("Broadcast sent to all pixels");
+    } else {
+      tft.print("Update sent to pixel ");
+      tft.println(otaTargetPixelId);
+    }
 
     tft.setCursor(10, 135);
     tft.setTextColor(TFT_CYAN, COLOR_BG);
@@ -1634,14 +1694,44 @@ void handleOTATouch(uint16_t x, uint16_t y) {
     }
 
   } else if (otaPhase == OTA_READY) {
-    // Send Update button (60, 155, 200, 40)
-    if (x >= 60 && x <= 260 && y >= 155 && y <= 195) {
-      sendOTABroadcast();
+    // "Update All" button (10, 90, 100, 30)
+    if (x >= 10 && x <= 110 && y >= 90 && y <= 120) {
+      otaTargetAll = true;
       drawOTAScreen();
       return;
     }
-    // Back button (110, 205, 100, 25)
-    if (x >= 110 && x <= 210 && y >= 205 && y <= 230) {
+
+    // "Send Update" button (120, 90, 190, 30)
+    if (x >= 120 && x <= 310 && y >= 90 && y <= 120) {
+      sendOTAUpdate();
+      drawOTAScreen();
+      return;
+    }
+
+    // Pixel grid cells (5, 120) to (305, 210)
+    if (x >= 5 && x <= 305 && y >= 120 && y <= 210) {
+      int cellW = 50;
+      int cellH = 22;
+      int startX = 5;
+      int startY = 120;
+      int cols = 6;
+
+      int col = (x - startX) / cellW;
+      int row = (y - startY) / cellH;
+
+      if (col >= 0 && col < cols && row >= 0 && row < 4) {
+        int pixelId = row * cols + col;
+        if (pixelId < MAX_PIXELS) {
+          otaTargetAll = false;
+          otaTargetPixelId = pixelId;
+          drawOTAScreen();
+        }
+      }
+      return;
+    }
+
+    // Back button (240, 215, 70, 20)
+    if (x >= 240 && x <= 310 && y >= 215 && y <= 235) {
       stopOTAServer();
       currentMode = MODE_MENU;
       drawMenu();
@@ -1963,6 +2053,8 @@ void loop() {
             break;
           case MODE_OTA:
             otaPhase = OTA_IDLE;
+            otaTargetAll = true;      // Default to "All"
+            otaTargetPixelId = 0;     // Default to pixel 0
             drawOTAScreen();
             break;
           case MODE_VERSION:
