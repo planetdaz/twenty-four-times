@@ -412,8 +412,7 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
     uint8_t leftDigit = currentMinute / 10;
     uint8_t rightDigit = currentMinute % 10;
 
-    // For left digit "1", right-align by using space in column 0
-    DigitPattern& leftPattern = (leftDigit == 1) ? digitPatterns[1] : digitPatterns[leftDigit];
+    DigitPattern& leftPattern = digitPatterns[leftDigit];
     DigitPattern& spacePattern = digitPatterns[11];  // Space pattern for right-aligning "1"
     DigitPattern& rightPattern = digitPatterns[rightDigit];
 
@@ -421,9 +420,10 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
     for (int i = 0; i < 6; i++) {
       uint8_t pixelId = digit1PixelIds[i];
 
-      // For "1" in left position: use space for column 0 (pixels 0, 2, 4), "1" for column 1 (pixels 1, 3, 5)
-      if (leftDigit == 1 && (i == 0 || i == 2 || i == 4)) {
-        // Column 0: use space pattern (right-align the "1")
+      // For "1" in left position: use space for column 0, "1" pattern for column 1
+      // Pixel indices: 0,2,4 = column 0; 1,3,5 = column 1
+      if (leftDigit == 1 && (i % 2 == 0)) {
+        // Column 0 (even indices): use space pattern (right-align the "1")
         packet.angleCmd.setPixelAngles(pixelId,
           spacePattern.angles[i][0],
           spacePattern.angles[i][1],
@@ -431,7 +431,7 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
           dir1, dir2, dir3);
         packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, spacePattern.opacity[i]);
       } else {
-        // Normal pattern
+        // Column 1 (odd indices) or other digits: use digit pattern
         packet.angleCmd.setPixelAngles(pixelId,
           leftPattern.angles[i][0],
           leftPattern.angles[i][1],
