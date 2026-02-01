@@ -11,6 +11,8 @@
 // External references (provided by master.cpp)
 extern TFT_eSPI tft;
 extern unsigned long lastCommandTime;
+extern unsigned long lastPingTime;
+void sendPing();  // External function to ping pixels
 
 // Color definitions (from master.cpp)
 #define COLOR_BG      TFT_BLACK
@@ -356,7 +358,7 @@ void updateFluidTimeDisplay() {
   tft.setCursor(10, 120);
   tft.setTextColor(TFT_CYAN, COLOR_BG);
   tft.print("Progress: ");
-  tft.print(currentGroup);
+  tft.print(currentGroup + 1);  // Display 1-based counting
   tft.print(" / ");
   tft.println(totalGroups);
 
@@ -368,6 +370,12 @@ void updateFluidTimeDisplay() {
 // ===== MAIN LOOP HANDLER =====
 
 void handleFluidTimeLoop(unsigned long currentTime) {
+  // Send periodic pings to keep pixels alive (every 3 seconds)
+  if (currentTime - lastPingTime >= 3000) {
+    sendPing();
+    lastPingTime = currentTime;
+  }
+
   switch (fluidPhase) {
     case FLUID_IDLE: {
       // Generate new pattern parameters
