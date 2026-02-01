@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 15
+#define FIRMWARE_VERSION_MINOR 21
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -137,6 +137,8 @@ OTAPhase otaPhase = OTA_IDLE;
 uint32_t firmwareSize = 0;
 uint8_t otaPixelStatus[MAX_PIXELS];  // Status of each pixel (OTAStatus enum)
 uint8_t otaPixelProgress[MAX_PIXELS]; // Progress of each pixel (0-100)
+bool otaPixelSelected[MAX_PIXELS];  // true = pixel selected for update
+bool otaPixelUpdated[MAX_PIXELS];   // true = pixel has been updated (green)
 
 // Parallel OTA orchestration
 unsigned long otaStartTime = 0;      // When OTA broadcast was sent
@@ -251,6 +253,7 @@ uint8_t lastSentRight = 11;             // Last sent right digit (11 = space)
 
 // ===== FUNCTION DECLARATIONS =====
 void sendPing();
+void sendReset();
 void drawDigitsScreen();
 void handleDigitsTouch(uint16_t x, uint16_t y);
 void sendTwoDigitPattern(uint8_t leftDigit, uint8_t rightDigit);
@@ -260,13 +263,15 @@ void drawProvisionScreen();
 void handleProvisionTouch(uint16_t x, uint16_t y);
 void sendDiscoveryCommand();
 void sendHighlightCommand(uint8_t* targetMac, HighlightState state);
+void sendHighlightToAll(HighlightState state);
 void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId);
+void sendFactoryResetIds();
 // OTA functions
 void initOTAServer();
 void stopOTAServer();
 void drawOTAScreen();
 void handleOTATouch(uint16_t x, uint16_t y);
-void sendOTABroadcast();
+void sendOTAUpdate();
 void handleOTAAck(const OTAAckPacket& ack);
 // Version functions
 void drawVersionScreen();
@@ -505,7 +510,14 @@ void sendRandomPattern() {
 
 // Receive callback for discovery responses and OTA acks from pixels
 void onMasterPacketReceived(const ESPNowPacket* packet, size_t len) {
-  if (packet->command == CMD_DISCOVERY && provisionPhase == PHASE_DISCOVERING) {
+  if (packet->command == CMD_DISCOVERY_RESPONSE) {
+    // CRITICAL: Only process discovery responses if we're STILL in discovery phase
+    // This prevents race condition where responses arrive after user exits provision mode
+    if (provisionPhase != PHASE_DISCOVERING) {
+      Serial.println("Discovery response ignored - not in discovery phase");
+      return;
+    }
+
     const DiscoveryResponsePacket& resp = packet->discoveryResponse;
 
     // Check if this MAC is already in our list
@@ -535,6 +547,12 @@ void onMasterPacketReceived(const ESPNowPacket* packet, size_t len) {
         Serial.print(resp.currentId);
       }
       Serial.println(")");
+
+      // Send HIGHLIGHT_DISCOVERY_FOUND to show "!" on the pixel
+      uint8_t mac[6];
+      memcpy(mac, resp.mac, 6);
+      sendHighlightCommand(mac, HIGHLIGHT_DISCOVERY_FOUND);
+      Serial.println("Sent HIGHLIGHT_DISCOVERY_FOUND to pixel");
     }
   } else if (packet->command == CMD_OTA_ACK) {
     handleOTAAck(packet->otaAck);
@@ -577,6 +595,14 @@ void sendHighlightCommand(uint8_t* targetMac, HighlightState state) {
   ESPNowComm::sendPacket(&packet, sizeof(HighlightPacket));
 }
 
+// Send highlight command to all discovered pixels
+void sendHighlightToAll(HighlightState state) {
+  for (uint8_t i = 0; i < discoveredCount; i++) {
+    sendHighlightCommand(discoveredMacs[i], state);
+    delay(5);  // Small delay to avoid flooding
+  }
+}
+
 // Send pixel ID assignment command
 void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId) {
   ESPNowPacket packet;
@@ -588,6 +614,21 @@ void sendAssignIdCommand(uint8_t* targetMac, uint8_t newId) {
     Serial.print("Assigned ID ");
     Serial.print(newId);
     Serial.println(" to pixel");
+  }
+}
+
+// Factory reset all pixel IDs (broadcast unprovisioned state)
+void sendFactoryResetIds() {
+  ESPNowPacket packet;
+  packet.setPixelId.command = CMD_SET_PIXEL_ID;
+  // Use broadcast MAC to target all pixels
+  memcpy(packet.setPixelId.targetMac, BROADCAST_MAC, 6);
+  packet.setPixelId.pixelId = PIXEL_ID_UNPROVISIONED;
+
+  if (ESPNowComm::sendPacket(&packet, sizeof(SetPixelIdPacket))) {
+    Serial.println("Factory reset broadcast sent - all pixel IDs reset to unprovisioned");
+  } else {
+    Serial.println("Failed to send factory reset");
   }
 }
 
@@ -609,7 +650,7 @@ void drawProvisionScreen() {
     tft.setCursor(10, 40);
     tft.println("Discover and assign IDs to pixels.");
     tft.setCursor(10, 55);
-    tft.println("Pixels will flash during discovery.");
+    tft.println("Pixels will display ? then ! when found.");
 
     // Start Discovery button
     tft.fillRoundRect(60, 90, 200, 50, 8, TFT_DARKGREEN);
@@ -618,11 +659,20 @@ void drawProvisionScreen() {
     tft.setCursor(75, 105);
     tft.println("Start Discovery");
 
+    // Factory Reset button (small, red, for testing)
+    tft.fillRoundRect(10, 150, 150, 35, 4, TFT_RED);
+    tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.setTextSize(1);
+    tft.setCursor(15, 160);
+    tft.println("Reset All IDs");
+    tft.setCursor(15, 172);
+    tft.println("(for testing)");
+
     // Back button
-    tft.fillRoundRect(110, 170, 100, 40, 8, TFT_DARKGREY);
+    tft.fillRoundRect(200, 150, 110, 35, 4, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
     tft.setTextSize(2);
-    tft.setCursor(135, 180);
+    tft.setCursor(230, 158);
     tft.println("Back");
 
   } else if (provisionPhase == PHASE_DISCOVERING) {
@@ -751,8 +801,37 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
       return;
     }
 
-    // Back button (110, 170, 100, 40)
-    if (x >= 110 && x <= 210 && y >= 170 && y <= 210) {
+    // Factory Reset button (10, 150, 150, 35)
+    if (x >= 10 && x <= 160 && y >= 150 && y <= 185) {
+      // Show confirmation on screen
+      tft.fillScreen(TFT_RED);
+      tft.setTextColor(TFT_WHITE, TFT_RED);
+      tft.setTextSize(2);
+      tft.setCursor(40, 100);
+      tft.println("Resetting IDs...");
+
+      // Send factory reset command
+      sendFactoryResetIds();
+
+      // Wait a moment
+      delay(1000);
+
+      // Show confirmation
+      tft.fillScreen(TFT_GREEN);
+      tft.setTextColor(TFT_WHITE, TFT_GREEN);
+      tft.setCursor(60, 100);
+      tft.println("IDs Reset!");
+      delay(1000);
+
+      // Redraw provision screen
+      drawProvisionScreen();
+      return;
+    }
+
+    // Back button (200, 150, 110, 35)
+    if (x >= 200 && x <= 310 && y >= 150 && y <= 185) {
+      // Send reset to clear any lingering highlight modes
+      sendReset();
       currentMode = MODE_MENU;
       drawMenu();
       return;
@@ -761,6 +840,8 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
   } else if (provisionPhase == PHASE_DISCOVERING) {
     // Stop button (20, 160, 130, 50)
     if (x >= 20 && x <= 150 && y >= 160 && y <= 210) {
+      // Send reset to clear highlight mode on all pixels
+      sendReset();
       provisionPhase = PHASE_IDLE;
       drawProvisionScreen();
       return;
@@ -768,10 +849,39 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
 
     // Assign button (170, 160, 130, 50)
     if (x >= 170 && x <= 300 && y >= 160 && y <= 210 && discoveredCount > 0) {
+      // Sort discovered pixels by current ID (low to high, treating unprovisioned as 0)
+      // Simple bubble sort since we only have max 24 items
+      for (uint8_t i = 0; i < discoveredCount - 1; i++) {
+        for (uint8_t j = 0; j < discoveredCount - i - 1; j++) {
+          // Treat PIXEL_ID_UNPROVISIONED (255) as 0 for sorting
+          uint8_t id1 = (discoveredIds[j] == PIXEL_ID_UNPROVISIONED) ? 0 : discoveredIds[j];
+          uint8_t id2 = (discoveredIds[j + 1] == PIXEL_ID_UNPROVISIONED) ? 0 : discoveredIds[j + 1];
+
+          if (id1 > id2) {
+            // Swap MACs
+            uint8_t tempMac[6];
+            memcpy(tempMac, discoveredMacs[j], 6);
+            memcpy(discoveredMacs[j], discoveredMacs[j + 1], 6);
+            memcpy(discoveredMacs[j + 1], tempMac, 6);
+
+            // Swap IDs
+            uint8_t tempId = discoveredIds[j];
+            discoveredIds[j] = discoveredIds[j + 1];
+            discoveredIds[j + 1] = tempId;
+          }
+        }
+      }
+      Serial.println("Sorted discovered pixels by ID");
+
       provisionPhase = PHASE_ASSIGNING;
       selectedMacIndex = 0;
       nextIdToAssign = 0;
-      // Highlight the first pixel
+      // Initialize all pixels: send IDLE to all, then SELECTED to the first
+      for (uint8_t i = 0; i < discoveredCount; i++) {
+        sendHighlightCommand(discoveredMacs[i], HIGHLIGHT_IDLE);
+        delay(5);  // Small delay to avoid flooding
+      }
+      // Highlight the selected pixel
       sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_SELECTED);
       drawProvisionScreen();
       return;
@@ -845,8 +955,11 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
 
     // Back button (10, 190, 80, 35)
     if (x >= 10 && x <= 90 && y >= 190 && y <= 225) {
-      // Un-highlight current
-      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      // Send reset to clear highlight modes, then send discovery found to all
+      sendReset();
+      delay(50);  // Give pixels time to process reset
+      // Re-show "!" on all discovered pixels
+      sendHighlightToAll(HIGHLIGHT_DISCOVERY_FOUND);
       provisionPhase = PHASE_DISCOVERING;
       drawProvisionScreen();
       return;
@@ -854,8 +967,8 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
 
     // Done button (230, 190, 80, 35)
     if (x >= 230 && x <= 310 && y >= 190 && y <= 225) {
-      // Un-highlight current
-      sendHighlightCommand(discoveredMacs[selectedMacIndex], HIGHLIGHT_IDLE);
+      // Send reset to clear all highlight modes
+      sendReset();
       provisionPhase = PHASE_IDLE;
       currentMode = MODE_MENU;
       drawMenu();
@@ -1225,6 +1338,31 @@ void sendPing() {
   }
 }
 
+// Send reset command to all pixels (clears special modes)
+// Sends multiple times to ensure all pixels receive it
+void sendReset() {
+  ESPNowPacket packet;
+  packet.command = CMD_RESET;
+
+  Serial.println("Sending reset to all pixels (3x for reliability)...");
+
+  // Send reset 3 times with delays to ensure all pixels receive it
+  for (int i = 0; i < 3; i++) {
+    if (ESPNowComm::sendPacket(&packet, sizeof(CommandType))) {
+      Serial.print("Reset sent (attempt ");
+      Serial.print(i + 1);
+      Serial.println("/3)");
+    } else {
+      Serial.print("Failed to send reset (attempt ");
+      Serial.print(i + 1);
+      Serial.println("/3)");
+    }
+    if (i < 2) delay(50);  // 50ms delay between sends
+  }
+
+  Serial.println("Reset sequence complete");
+}
+
 // ===== OTA UPDATE FUNCTIONS =====
 
 // Handle OTA status acknowledgment from pixel
@@ -1306,44 +1444,72 @@ void stopOTAServer() {
   Serial.println("OTA: WiFi AP stopped");
 }
 
-// Broadcast OTA start command to ALL pixels simultaneously
-void sendOTABroadcast() {
-  // Clear status
+// Send OTA start command to all selected pixels
+void sendOTAUpdate() {
+  // Count selected pixels
+  int selectedCount = 0;
   for (int i = 0; i < MAX_PIXELS; i++) {
+    if (otaPixelSelected[i]) selectedCount++;
+  }
+
+  if (selectedCount == 0) {
+    Serial.println("OTA: No pixels selected for update");
+    return;
+  }
+
+  Serial.print("OTA: Sending updates to ");
+  Serial.print(selectedCount);
+  Serial.println(" selected pixel(s)");
+
+  // Loop through selected pixels and send individual OTA commands
+  for (int i = 0; i < MAX_PIXELS; i++) {
+    if (!otaPixelSelected[i]) continue;
+
+    // Clear status for this pixel
     otaPixelStatus[i] = OTA_STATUS_IDLE;
     otaPixelProgress[i] = 0;
+
+    ESPNowPacket packet;
+    packet.otaStart.command = CMD_OTA_START;
+    packet.otaStart.targetPixelId = i;
+
+    // Copy WiFi credentials
+    strncpy(packet.otaStart.ssid, OTA_AP_SSID, 31);
+    packet.otaStart.ssid[31] = '\0';
+    strncpy(packet.otaStart.password, OTA_AP_PASSWORD, 31);
+    packet.otaStart.password[31] = '\0';
+
+    // Build firmware URL (dev machine OTA server)
+    snprintf(packet.otaStart.firmwareUrl, 127, "http://%s:%d/firmware.bin",
+             OTA_DEV_SERVER_IP, OTA_DEV_SERVER_PORT);
+    packet.otaStart.firmwareUrl[127] = '\0';
+
+    packet.otaStart.firmwareSize = firmwareSize;
+    packet.otaStart.firmwareCrc32 = 0;  // Skip CRC check for now
+
+    Serial.print("OTA: Sending START to pixel ");
+    Serial.println(i);
+
+    if (ESPNowComm::sendPacket(&packet, sizeof(OTAStartPacket))) {
+      Serial.print("OTA: Update sent to pixel ");
+      Serial.println(i);
+
+      // Mark as updated and deselect
+      otaPixelUpdated[i] = true;
+      otaPixelSelected[i] = false;
+    } else {
+      Serial.print("OTA: Failed to send update to pixel ");
+      Serial.println(i);
+    }
+
+    // Small delay between sends to avoid flooding
+    delay(50);
   }
 
-  ESPNowPacket packet;
-  packet.otaStart.command = CMD_OTA_START;
-  packet.otaStart.targetPixelId = BROADCAST_PIXEL_ID;  // Broadcast to all
+  Serial.println("OTA: All selected pixels updated");
 
-  // Copy WiFi credentials
-  strncpy(packet.otaStart.ssid, OTA_AP_SSID, 31);
-  packet.otaStart.ssid[31] = '\0';
-  strncpy(packet.otaStart.password, OTA_AP_PASSWORD, 31);
-  packet.otaStart.password[31] = '\0';
-
-  // Build firmware URL (dev machine OTA server)
-  snprintf(packet.otaStart.firmwareUrl, 127, "http://%s:%d/firmware.bin",
-           OTA_DEV_SERVER_IP, OTA_DEV_SERVER_PORT);
-  packet.otaStart.firmwareUrl[127] = '\0';
-
-  packet.otaStart.firmwareSize = firmwareSize;
-  packet.otaStart.firmwareCrc32 = 0;  // Skip CRC check for now
-
-  Serial.println("OTA: Broadcasting START to all pixels");
-  Serial.print("OTA: URL: ");
-  Serial.println(packet.otaStart.firmwareUrl);
-
-  if (ESPNowComm::sendPacket(&packet, sizeof(OTAStartPacket))) {
-    otaPhase = OTA_IN_PROGRESS;
-    otaStartTime = millis();
-    Serial.println("OTA: Broadcast sent - all online pixels will update in parallel");
-  } else {
-    Serial.println("OTA: Failed to send broadcast!");
-    otaPhase = OTA_READY;
-  }
+  // Redraw screen to show green (updated) pixels
+  drawOTAScreen();
 }
 
 // Draw OTA screen
@@ -1397,45 +1563,88 @@ void drawOTAScreen() {
     tft.setCursor(40, 30);
     tft.println("WiFi AP Ready!");
 
+    // Condensed WiFi credentials and instructions
     tft.setTextSize(1);
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
     tft.setCursor(10, 55);
-    tft.print("SSID: ");
+    tft.print("WiFi: ");
     tft.setTextColor(TFT_CYAN, COLOR_BG);
-    tft.println(OTA_AP_SSID);
-
+    tft.print(OTA_AP_SSID);
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setCursor(10, 70);
-    tft.print("Password: ");
+    tft.print(" / ");
     tft.setTextColor(TFT_CYAN, COLOR_BG);
     tft.println(OTA_AP_PASSWORD);
 
-    tft.setTextColor(TFT_YELLOW, COLOR_BG);
-    tft.setCursor(10, 90);
-    tft.println("On dev machine:");
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setCursor(10, 105);
-    tft.println("1. Connect to above WiFi");
-    tft.setCursor(10, 120);
-    tft.println("2. Run: npm run ota:server");
-    tft.setCursor(10, 135);
-    tft.println("3. Tap 'Send Update' below");
+    tft.setCursor(10, 70);
+    tft.println("Run: npm run ota:server");
 
-    // Send Update button
-    tft.fillRoundRect(60, 155, 200, 40, 8, TFT_BLUE);
-    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+    tft.setCursor(10, 85);
+    tft.setTextColor(TFT_YELLOW, COLOR_BG);
+    tft.println("Select pixels, then tap Send Update");
+
+    // Draw pixel grid (6 columns × 4 rows)
+    int cellW = 50;
+    int cellH = 22;
+    int startX = 5;
+    int startY = 105;
+    int cols = 6;
+
+    for (int i = 0; i < MAX_PIXELS; i++) {
+      int col = i % cols;
+      int row = i / cols;
+      int x = startX + col * cellW;
+      int y = startY + row * cellH;
+
+      // Determine cell color based on state
+      uint16_t bgColor = TFT_BLACK;
+      uint16_t borderColor = TFT_DARKGREY;
+
+      if (otaPixelUpdated[i]) {
+        // Green for already updated pixels
+        bgColor = TFT_DARKGREEN;
+        borderColor = TFT_GREEN;
+      } else if (otaPixelSelected[i]) {
+        // Blue for selected pixels (pending update)
+        bgColor = TFT_DARKBLUE;
+        borderColor = TFT_BLUE;
+      }
+
+      // Draw cell
+      tft.fillRoundRect(x, y, cellW - 2, cellH - 2, 3, bgColor);
+      tft.drawRoundRect(x, y, cellW - 2, cellH - 2, 3, borderColor);
+
+      // Draw pixel ID
+      tft.setTextColor(TFT_WHITE, bgColor);
+      tft.setTextSize(1);
+      tft.setCursor(x + (i < 10 ? 20 : 16), y + 7);
+      tft.print(i);
+    }
+
+    // "Send Update" button (bottom left)
+    tft.fillRoundRect(10, 195, 120, 30, 4, TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
     tft.setTextSize(2);
-    tft.setCursor(75, 165);
-    tft.println("Send Update");
+    tft.setCursor(30, 200);
+    tft.println("Send");
 
-    // Back button
-    tft.fillRoundRect(110, 205, 100, 25, 8, TFT_DARKGREY);
+    // "Clear All" button (middle)
+    tft.fillRoundRect(140, 195, 90, 30, 4, TFT_ORANGE);
+    tft.setTextColor(TFT_WHITE, TFT_ORANGE);
+    tft.setTextSize(1);
+    tft.setCursor(155, 205);
+    tft.println("Clear All");
+
+    // "Back" button (bottom right)
+    tft.fillRoundRect(240, 195, 70, 30, 4, TFT_DARKGREY);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
     tft.setTextSize(1);
-    tft.setCursor(140, 210);
+    tft.setCursor(260, 205);
     tft.println("Back");
 
   } else if (otaPhase == OTA_IN_PROGRESS) {
+    // Note: This phase is not normally used in the multi-select workflow
+    // Kept for potential future use or error handling
     tft.setTextColor(TFT_YELLOW, COLOR_BG);
     tft.setTextSize(3);
     tft.setCursor(10, 50);
@@ -1445,7 +1654,7 @@ void drawOTAScreen() {
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
 
     tft.setCursor(10, 100);
-    tft.println("All online pixels updating");
+    tft.println("Pixels updating...");
 
     tft.setCursor(10, 120);
     tft.setTextColor(TFT_CYAN, COLOR_BG);
@@ -1469,6 +1678,8 @@ void drawOTAScreen() {
     tft.println("Done");
 
   } else if (otaPhase == OTA_COMPLETE) {
+    // Note: This phase is not normally used in the multi-select workflow
+    // Kept for potential future use or error handling
     tft.setTextColor(TFT_GREEN, COLOR_BG);
     tft.setTextSize(3);
     tft.setCursor(30, 60);
@@ -1478,7 +1689,7 @@ void drawOTAScreen() {
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
 
     tft.setCursor(10, 110);
-    tft.println("Broadcast sent to all pixels");
+    tft.println("Updates sent to pixels");
 
     tft.setCursor(10, 135);
     tft.setTextColor(TFT_CYAN, COLOR_BG);
@@ -1516,14 +1727,54 @@ void handleOTATouch(uint16_t x, uint16_t y) {
     }
 
   } else if (otaPhase == OTA_READY) {
-    // Send Update button (60, 155, 200, 40)
-    if (x >= 60 && x <= 260 && y >= 155 && y <= 195) {
-      sendOTABroadcast();
+    // Pixel grid cells (5, 105) to (305, 193)
+    if (x >= 5 && x <= 305 && y >= 105 && y <= 193) {
+      int cellW = 50;
+      int cellH = 22;
+      int startX = 5;
+      int startY = 105;
+      int cols = 6;
+
+      int col = (x - startX) / cellW;
+      int row = (y - startY) / cellH;
+
+      if (col >= 0 && col < cols && row >= 0 && row < 4) {
+        int pixelId = row * cols + col;
+        if (pixelId < MAX_PIXELS) {
+          // Toggle selection (if not already updated)
+          if (otaPixelUpdated[pixelId]) {
+            // Tapping an updated pixel clears it back to unselected
+            otaPixelUpdated[pixelId] = false;
+          } else {
+            // Toggle selection
+            otaPixelSelected[pixelId] = !otaPixelSelected[pixelId];
+          }
+          drawOTAScreen();
+        }
+      }
+      return;
+    }
+
+    // "Send Update" button (10, 195, 120, 30)
+    if (x >= 10 && x <= 130 && y >= 195 && y <= 225) {
+      sendOTAUpdate();
+      // sendOTAUpdate will redraw the screen
+      return;
+    }
+
+    // "Clear All" button (140, 195, 90, 30)
+    if (x >= 140 && x <= 230 && y >= 195 && y <= 225) {
+      // Clear all selections and updated states
+      for (int i = 0; i < MAX_PIXELS; i++) {
+        otaPixelSelected[i] = false;
+        otaPixelUpdated[i] = false;
+      }
       drawOTAScreen();
       return;
     }
-    // Back button (110, 205, 100, 25)
-    if (x >= 110 && x <= 210 && y >= 205 && y <= 230) {
+
+    // "Back" button (240, 195, 70, 30)
+    if (x >= 240 && x <= 310 && y >= 195 && y <= 225) {
       stopOTAServer();
       currentMode = MODE_MENU;
       drawMenu();
@@ -1845,6 +2096,11 @@ void loop() {
             break;
           case MODE_OTA:
             otaPhase = OTA_IDLE;
+            // Clear all selections and updated states
+            for (int i = 0; i < MAX_PIXELS; i++) {
+              otaPixelSelected[i] = false;
+              otaPixelUpdated[i] = false;
+            }
             drawOTAScreen();
             break;
           case MODE_VERSION:

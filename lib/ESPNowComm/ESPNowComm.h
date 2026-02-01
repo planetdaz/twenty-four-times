@@ -32,7 +32,8 @@ enum CommandType : uint8_t {
   CMD_OTA_ACK = 0x08,         // Pixel acknowledges OTA command (response)
   CMD_GET_VERSION = 0x09,     // Request pixels to display their version
   CMD_VERSION_RESPONSE = 0x0A,// Pixel responds with version info
-  CMD_OTA_START = 0x0B        // Tell specific pixel to start OTA download (sequential orchestration)
+  CMD_OTA_START = 0x0B,       // Tell specific pixel to start OTA download (sequential orchestration)
+  CMD_DISCOVERY_RESPONSE = 0x0C // Pixel responds to discovery request (CRITICAL: separate from CMD_DISCOVERY to prevent infinite loop!)
 };
 
 // Transition/easing types (matches pixel's EasingType enum)
@@ -243,16 +244,18 @@ struct __attribute__((packed)) DiscoveryCommandPacket {
 
 // Discovery response packet - pixel responds with its MAC and current ID
 struct __attribute__((packed)) DiscoveryResponsePacket {
-  CommandType command;           // CMD_DISCOVERY (response uses same command type)
+  CommandType command;           // CMD_DISCOVERY_RESPONSE (CRITICAL: different from CMD_DISCOVERY to prevent infinite loop!)
   uint8_t mac[6];                // This pixel's MAC address
   uint8_t currentId;             // Current assigned ID (or PIXEL_ID_UNPROVISIONED)
 };
 
 // Highlight states for provisioning UI
 enum HighlightState : uint8_t {
-  HIGHLIGHT_IDLE = 0,      // Green bg, white "?" - waiting
-  HIGHLIGHT_SELECTED = 1,  // Blue border, black bg, yellow "?" - currently selected
-  HIGHLIGHT_ASSIGNED = 2   // Green checkmark on black bg - assignment complete
+  HIGHLIGHT_IDLE = 0,              // Blue border, white text - idle state in assignment
+  HIGHLIGHT_SELECTED = 1,          // Green bg - currently selected in assignment
+  HIGHLIGHT_ASSIGNED = 2,          // Green "OK" text - assignment complete
+  HIGHLIGHT_DISCOVERY_WAITING = 3, // White "?" on black - waiting to be discovered
+  HIGHLIGHT_DISCOVERY_FOUND = 4    // White "!" on black - discovered, waiting for assignment
 };
 
 // Highlight packet - visual feedback during assignment phase

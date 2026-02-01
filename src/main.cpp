@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 15
+#define FIRMWARE_VERSION_MINOR 21
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -597,7 +597,11 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
 
     case CMD_RESET:
       Serial.println("ESP-NOW: Reset command received");
-      // Could reset to default state here
+      // Clear all special display modes
+      versionMode = false;
+      highlightMode = false;
+      errorState = false;
+      Serial.println("ESP-NOW: All display modes cleared");
       break;
 
     case CMD_SET_PIXEL_ID: {
@@ -661,9 +665,10 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
       }
 
       if (!excluded) {
-        // Show red background while responding (visual feedback)
-        canvas->fillScreen(0xF800);  // Red
-        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        // Enter discovery waiting mode - show "?"
+        highlightMode = true;
+        currentHighlightState = HIGHLIGHT_DISCOVERY_WAITING;
+        Serial.println("ESP-NOW: Entering discovery waiting mode (showing ?)");
 
         // Random delay (0-2000ms) to avoid packet collisions
         uint16_t delayMs = random(2000);
@@ -674,7 +679,7 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
 
         // Send response with our MAC and current ID
         ESPNowPacket response;
-        response.discoveryResponse.command = CMD_DISCOVERY;
+        response.discoveryResponse.command = CMD_DISCOVERY_RESPONSE;  // CRITICAL: Use separate command to prevent infinite loop!
         memcpy(response.discoveryResponse.mac, myMac, 6);
         response.discoveryResponse.currentId = pixelId;
 
@@ -683,12 +688,8 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
         } else {
           Serial.println("ESP-NOW: Discovery response FAILED");
         }
-
-        // Show green to indicate we responded
-        canvas->fillScreen(0x07E0);  // Green
-        tft.drawRGBBitmap(0, 0, canvas->getBuffer(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
       } else {
-        Serial.println("ESP-NOW: Discovery received but we're excluded");
+        Serial.println("ESP-NOW: Discovery received but we're excluded (already discovered)");
       }
       break;
     }
@@ -1301,6 +1302,24 @@ void loop() {
         canvas->setCursor(40, 180);
         canvas->print("ID: ");
         canvas->print(pixelId);
+        break;
+
+      case HIGHLIGHT_DISCOVERY_WAITING:
+        // Black bg with white "?" - waiting to be discovered
+        canvas->fillScreen(GC9A01A_BLACK);
+        canvas->setTextColor(GC9A01A_WHITE);
+        canvas->setTextSize(15);
+        canvas->setCursor(85, 90);
+        canvas->print("?");
+        break;
+
+      case HIGHLIGHT_DISCOVERY_FOUND:
+        // Black bg with white "!" - discovered, waiting for assignment
+        canvas->fillScreen(GC9A01A_BLACK);
+        canvas->setTextColor(GC9A01A_WHITE);
+        canvas->setTextSize(15);
+        canvas->setCursor(95, 90);
+        canvas->print("!");
         break;
     }
 
