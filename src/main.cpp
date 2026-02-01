@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 20
+#define FIRMWARE_VERSION_MINOR 21
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -679,7 +679,7 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
 
         // Send response with our MAC and current ID
         ESPNowPacket response;
-        response.discoveryResponse.command = CMD_DISCOVERY;
+        response.discoveryResponse.command = CMD_DISCOVERY_RESPONSE;  // CRITICAL: Use separate command to prevent infinite loop!
         memcpy(response.discoveryResponse.mac, myMac, 6);
         response.discoveryResponse.currentId = pixelId;
 

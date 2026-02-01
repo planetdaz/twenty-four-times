@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 20
+#define FIRMWARE_VERSION_MINOR 21
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -510,7 +510,7 @@ void sendRandomPattern() {
 
 // Receive callback for discovery responses and OTA acks from pixels
 void onMasterPacketReceived(const ESPNowPacket* packet, size_t len) {
-  if (packet->command == CMD_DISCOVERY) {
+  if (packet->command == CMD_DISCOVERY_RESPONSE) {
     // CRITICAL: Only process discovery responses if we're STILL in discovery phase
     // This prevents race condition where responses arrive after user exits provision mode
     if (provisionPhase != PHASE_DISCOVERING) {
