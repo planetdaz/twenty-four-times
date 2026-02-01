@@ -118,35 +118,14 @@ void sendTwoDigitDisplay(
       pixelDir3 = dir3;
     }
 
-    // Special handling for digit "1" - right-align it
-    if (rightDigit == 1) {
-      if (i % 2 == 0) {
-        // Column 0: use space pattern (blank)
-        packet.angleCmd.setPixelAngles(pixelId,
-          spacePattern.angles[i][0],
-          spacePattern.angles[i][1],
-          spacePattern.angles[i][2],
-          pixelDir1, pixelDir2, pixelDir3);
-        packet.angleCmd.setPixelStyle(pixelId, colorIndex, spacePattern.opacity[i]);
-      } else {
-        // Column 1: use column 0 from "1" pattern
-        uint8_t sourceIdx = i - 1;
-        packet.angleCmd.setPixelAngles(pixelId,
-          rightPattern.angles[sourceIdx][0],
-          rightPattern.angles[sourceIdx][1],
-          rightPattern.angles[sourceIdx][2],
-          pixelDir1, pixelDir2, pixelDir3);
-        packet.angleCmd.setPixelStyle(pixelId, colorIndex, rightPattern.opacity[sourceIdx]);
-      }
-    } else {
-      // Other digits: use pattern as-is
-      packet.angleCmd.setPixelAngles(pixelId,
-        rightPattern.angles[i][0],
-        rightPattern.angles[i][1],
-        rightPattern.angles[i][2],
-        pixelDir1, pixelDir2, pixelDir3);
-      packet.angleCmd.setPixelStyle(pixelId, colorIndex, rightPattern.opacity[i]);
-    }
+    // Right digit: use pattern as-is (left-justified, even for "1")
+    // This keeps digits close together (e.g., "21" not "2 1")
+    packet.angleCmd.setPixelAngles(pixelId,
+      rightPattern.angles[i][0],
+      rightPattern.angles[i][1],
+      rightPattern.angles[i][2],
+      pixelDir1, pixelDir2, pixelDir3);
+    packet.angleCmd.setPixelStyle(pixelId, colorIndex, rightPattern.opacity[i]);
   }
 
   // Set transition and duration
