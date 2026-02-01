@@ -14,6 +14,7 @@ extern unsigned long lastCommandTime;
 extern unsigned long lastPingTime;
 void sendPing();  // External function to ping pixels
 uint8_t getCurrentMinute();  // Get current minute from real-time clock
+String getCurrentTimeString();  // Get formatted time string (e.g., "12:35 PM")
 
 // Digit pattern support (from master.cpp)
 // DigitPattern struct already defined in master.cpp before this header is included
@@ -631,6 +632,13 @@ void updateFluidTimeDisplay() {
   tft.setCursor(10, 10);
   tft.println("FLUID TIME");
 
+  // Display current time in top-right
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_CYAN, COLOR_BG);
+  tft.setTextDatum(TR_DATUM);  // Top-right alignment
+  tft.drawString(getCurrentTimeString(), 310, 10);
+  tft.setTextDatum(TL_DATUM);  // Reset to top-left
+
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
   tft.setTextSize(1);
 
@@ -711,6 +719,8 @@ void handleFluidTimeLoop(unsigned long currentTime) {
     case FLUID_IDLE: {
       // Decide whether to show time or random pattern
       if (shouldShowTimeNext) {
+        // Get current real-time minute before displaying
+        currentMinute = getCurrentMinute();
         // Generate time display pattern
         generateFluidTimePattern();
         shouldShowTimeNext = false;  // Clear flag

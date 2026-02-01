@@ -9,7 +9,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 33
+#define FIRMWARE_VERSION_MINOR 34
 
 // ===== WIFI & TIME CONFIGURATION =====
 const char* WIFI_SSID = "Frontier5664";
@@ -113,6 +113,7 @@ const unsigned long DISCOVERY_WINDOW = 5000;    // Wait 5 seconds for responses
 unsigned long lastCommandTime = 0;
 unsigned long lastPingTime = 0;
 unsigned long modeStartTime = 0;
+unsigned long lastMenuTimeUpdate = 0;  // Track last time display update on menu
 const unsigned long IDENTIFY_DURATION = 5000;    // Identify phase duration
 const unsigned long PING_INTERVAL = 5000;        // 5 seconds between pings
 
@@ -430,6 +431,13 @@ void drawMenu() {
   tft.print(FIRMWARE_VERSION_MAJOR);
   tft.print(".");
   tft.print(FIRMWARE_VERSION_MINOR);
+
+  // Current time display (bottom center)
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_CYAN, COLOR_BG);
+  tft.setTextDatum(BC_DATUM);  // Bottom center alignment
+  tft.drawString(getCurrentTimeString(), 160, 235);
+  tft.setTextDatum(TL_DATUM);  // Reset to top-left
 }
 
 // Check which menu button was pressed
@@ -2054,6 +2062,22 @@ uint8_t getCurrentMinute() {
   return 0;  // Return 0 if time not available
 }
 
+// Get current time as formatted string (e.g., "12:35 PM")
+String getCurrentTimeString() {
+  if (!wifiConnected) {
+    return "No WiFi";
+  }
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return "No Time";
+  }
+
+  char timeStr[16];
+  strftime(timeStr, sizeof(timeStr), "%I:%M %p", &timeinfo);
+  return String(timeStr);
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -2266,7 +2290,16 @@ void loop() {
   // Handle mode-specific logic
   switch (currentMode) {
     case MODE_MENU:
-      // Nothing to do - waiting for touch
+      // Update time display every second
+      if (currentTime - lastMenuTimeUpdate >= 1000) {
+        lastMenuTimeUpdate = currentTime;
+        // Redraw just the time at the bottom
+        tft.setTextSize(1);
+        tft.setTextColor(TFT_CYAN, COLOR_BG);
+        tft.setTextDatum(BC_DATUM);  // Bottom center alignment
+        tft.drawString(getCurrentTimeString(), 160, 235);
+        tft.setTextDatum(TL_DATUM);  // Reset to top-left
+      }
       break;
 
     case MODE_ANIMATIONS:
