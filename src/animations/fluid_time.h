@@ -420,18 +420,31 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
     for (int i = 0; i < 6; i++) {
       uint8_t pixelId = digit1PixelIds[i];
 
-      // For "1" in left position: use space for column 0, "1" pattern for column 1
-      // Pixel indices: 0,2,4 = column 0; 1,3,5 = column 1
-      if (leftDigit == 1 && (i % 2 == 0)) {
-        // Column 0 (even indices): use space pattern (right-align the "1")
-        packet.angleCmd.setPixelAngles(pixelId,
-          spacePattern.angles[i][0],
-          spacePattern.angles[i][1],
-          spacePattern.angles[i][2],
-          dir1, dir2, dir3);
-        packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, spacePattern.opacity[i]);
+      if (leftDigit == 1) {
+        // Special handling for "1": right-align it
+        // The "1" pattern has the digit in column 0, we want it in column 1
+        // Pixel indices: 0,2,4 = column 0; 1,3,5 = column 1
+        if (i % 2 == 0) {
+          // Column 0: use space pattern
+          packet.angleCmd.setPixelAngles(pixelId,
+            spacePattern.angles[i][0],
+            spacePattern.angles[i][1],
+            spacePattern.angles[i][2],
+            dir1, dir2, dir3);
+          packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, spacePattern.opacity[i]);
+        } else {
+          // Column 1: use column 0 from "1" pattern (remap indices)
+          // i=1 → use pattern[0], i=3 → use pattern[2], i=5 → use pattern[4]
+          uint8_t sourceIdx = i - 1;  // Map column 1 to column 0 of source pattern
+          packet.angleCmd.setPixelAngles(pixelId,
+            leftPattern.angles[sourceIdx][0],
+            leftPattern.angles[sourceIdx][1],
+            leftPattern.angles[sourceIdx][2],
+            dir1, dir2, dir3);
+          packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, leftPattern.opacity[sourceIdx]);
+        }
       } else {
-        // Column 1 (odd indices) or other digits: use digit pattern
+        // Other digits: use pattern as-is
         packet.angleCmd.setPixelAngles(pixelId,
           leftPattern.angles[i][0],
           leftPattern.angles[i][1],
