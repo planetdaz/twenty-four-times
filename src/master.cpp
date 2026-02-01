@@ -9,7 +9,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 38
+#define FIRMWARE_VERSION_MINOR 39
 
 // ===== WIFI & TIME CONFIGURATION =====
 const char* WIFI_SSID = "Frontier5664";
@@ -85,6 +85,7 @@ enum ControlMode {
   MODE_UNITY,       // Unity animation - all pixels move in unison
   MODE_FLUID_TIME,  // Fluid Time animation - staggered wave effect
   MODE_ORBIT_TIME,  // Orbit Time animation - continuous orbital rotation
+  MODE_METRONOME_TIME, // Metronome Time animation - polyrhythmic ticking
   MODE_DIGITS,      // Display digits 0-9 with animations
   MODE_PROVISION,   // Discovery and provisioning of pixels
   MODE_OTA,         // OTA firmware update for pixels
@@ -257,6 +258,7 @@ float currentDigitSpeed = 2.0;
 #include "animations/digit_display.h"  // Shared digit display helper
 #include "animations/fluid_time.h"
 #include "animations/orbit_time.h"
+#include "animations/metronome_time.h"
 
 // Auto-cycle mode variables (cycles 00-99 for two-digit display)
 bool autoCycleEnabled = false;
@@ -488,74 +490,91 @@ void drawAnimationsScreen() {
   tft.drawString("Select Animation:", 160, 45);
   tft.setTextDatum(TL_DATUM);
 
-  // Unity animation button (left)
-  tft.fillRoundRect(10, 70, 145, 80, 8, TFT_DARKGREEN);
+  // 2x2 grid of animation buttons
+
+  // Unity animation button (top left)
+  tft.fillRoundRect(10, 70, 145, 60, 8, TFT_DARKGREEN);
   tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
   tft.setTextSize(2);
-  tft.setCursor(40, 85);
+  tft.setCursor(40, 80);
   tft.println("Unity");
   tft.setTextSize(1);
-  tft.setCursor(20, 110);
+  tft.setCursor(20, 105);
   tft.println("Synchronized");
-  tft.setCursor(25, 125);
-  tft.println("All together");
 
-  // Fluid Time animation button (right)
-  tft.fillRoundRect(165, 70, 145, 80, 8, TFT_PURPLE);
+  // Fluid Time animation button (top right)
+  tft.fillRoundRect(165, 70, 145, 60, 8, TFT_PURPLE);
   tft.setTextColor(TFT_WHITE, TFT_PURPLE);
   tft.setTextSize(2);
-  tft.setCursor(175, 85);
+  tft.setCursor(175, 80);
   tft.println("Fluid Time");
   tft.setTextSize(1);
-  tft.setCursor(175, 110);
+  tft.setCursor(175, 105);
   tft.println("Staggered wave");
-  tft.setCursor(185, 125);
-  tft.println("Left to right");
 
-  // Orbit Time animation button (bottom center)
-  tft.fillRoundRect(85, 160, 150, 50, 8, TFT_ORANGE);
+  // Orbit Time animation button (bottom left)
+  tft.fillRoundRect(10, 140, 145, 60, 8, TFT_ORANGE);
   tft.setTextColor(TFT_WHITE, TFT_ORANGE);
   tft.setTextSize(2);
-  tft.setCursor(95, 170);
+  tft.setCursor(25, 150);
   tft.println("Orbit Time");
   tft.setTextSize(1);
-  tft.setCursor(90, 190);
+  tft.setCursor(20, 175);
   tft.println("Continuous orbit");
 
-  // Back button (bottom right)
-  tft.fillRoundRect(245, 160, 65, 50, 8, TFT_RED);
-  tft.setTextColor(TFT_WHITE, TFT_RED);
+  // Metronome Time animation button (bottom right)
+  tft.fillRoundRect(165, 140, 145, 60, 8, TFT_CYAN);
+  tft.setTextColor(TFT_BLACK, TFT_CYAN);
   tft.setTextSize(2);
-  tft.setCursor(253, 178);
+  tft.setCursor(170, 150);
+  tft.println("Metronome");
+  tft.setTextSize(1);
+  tft.setCursor(165, 175);
+  tft.println("Polyrhythmic tick");
+
+  // Back button (bottom center)
+  tft.fillRoundRect(130, 210, 60, 25, 4, TFT_RED);
+  tft.setTextColor(TFT_WHITE, TFT_RED);
+  tft.setTextSize(1);
+  tft.setCursor(145, 217);
   tft.print("Back");
 }
 
 // Handle touch on animations screen
 void handleAnimationsTouch(uint16_t x, uint16_t y) {
-  // Unity button (10, 70, 145, 80)
-  if (x >= 10 && x <= 155 && y >= 70 && y <= 150) {
+  // Unity button (10, 70, 145, 60) - top left
+  if (x >= 10 && x <= 155 && y >= 70 && y <= 130) {
     currentMode = MODE_UNITY;
     sendUnityPattern();  // Send first pattern immediately
     lastCommandTime = millis();
     return;
   }
 
-  // Fluid Time button (165, 70, 145, 80)
-  if (x >= 165 && x <= 310 && y >= 70 && y <= 150) {
+  // Fluid Time button (165, 70, 145, 60) - top right
+  if (x >= 165 && x <= 310 && y >= 70 && y <= 130) {
     currentMode = MODE_FLUID_TIME;
     // Fluid Time will start automatically in the loop
     return;
   }
 
-  // Orbit Time button (85, 160, 150, 50)
-  if (x >= 85 && x <= 235 && y >= 160 && y <= 210) {
+  // Orbit Time button (10, 140, 145, 60) - bottom left
+  if (x >= 10 && x <= 155 && y >= 140 && y <= 200) {
     currentMode = MODE_ORBIT_TIME;
     // Orbit Time will start automatically in the loop
     return;
   }
 
-  // Back button (245, 160, 65, 50)
-  if (x >= 245 && x <= 310 && y >= 160 && y <= 210) {
+  // Metronome Time button (165, 140, 145, 60) - bottom right
+  if (x >= 165 && x <= 310 && y >= 140 && y <= 200) {
+    currentMode = MODE_METRONOME_TIME;
+    // Initialize metronome animation
+    generateMetronomePattern();
+    updateMetronomeDisplay();
+    return;
+  }
+
+  // Back button (130, 210, 60, 25) - bottom center
+  if (x >= 130 && x <= 190 && y >= 210 && y <= 235) {
     currentMode = MODE_MENU;
     drawMenu();
     return;
@@ -2230,7 +2249,7 @@ void loop() {
       handleOrbitTimeTouch(tx, ty);
     } else {
       // Any touch in other modes returns to animations menu (for animation modes)
-      if (currentMode == MODE_UNITY || currentMode == MODE_FLUID_TIME) {
+      if (currentMode == MODE_UNITY || currentMode == MODE_FLUID_TIME || currentMode == MODE_METRONOME_TIME) {
         currentMode = MODE_ANIMATIONS;
         drawAnimationsScreen();
         Serial.println("Returned to animations menu");
@@ -2277,6 +2296,12 @@ void loop() {
     case MODE_ORBIT_TIME: {
       // Handle Orbit Time animation loop
       handleOrbitTimeLoop(currentTime);
+      break;
+    }
+
+    case MODE_METRONOME_TIME: {
+      // Handle Metronome Time animation loop
+      handleMetronomeLoop(currentTime);
       break;
     }
 

@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 38
+#define FIRMWARE_VERSION_MINOR 39
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
