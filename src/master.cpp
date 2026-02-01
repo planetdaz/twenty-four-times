@@ -9,7 +9,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 35
+#define FIRMWARE_VERSION_MINOR 36
 
 // ===== WIFI & TIME CONFIGURATION =====
 const char* WIFI_SSID = "Frontier5664";
@@ -1316,97 +1316,30 @@ void handleDigitsTouch(uint16_t x, uint16_t y) {
 void sendTwoDigitPattern(uint8_t leftDigit, uint8_t rightDigit) {
   if (leftDigit > 11 || rightDigit > 11) return; // Invalid digit
 
-  ESPNowPacket packet;
-  packet.angleCmd.command = CMD_SET_ANGLES;
+  // Get random transition for this display
+  TransitionType transition = getRandomTransition();
 
-  // Target only the 12 pixels used for the two-digit display
-  packet.angleCmd.clearTargetMask();
-  for (int i = 0; i < 6; i++) {
-    packet.angleCmd.setTargetPixel(digit1PixelIds[i]);
-    packet.angleCmd.setTargetPixel(digit2PixelIds[i]);
-  }
+  // Use consolidated digit display function with per-pixel random directions
+  sendTwoDigitDisplay(
+    leftDigit,
+    rightDigit,
+    currentDigitColor,
+    transition,
+    currentDigitSpeed,
+    DIR_SHORTEST, DIR_SHORTEST, DIR_SHORTEST,  // Default dirs (not used when randomizePerPixel=true)
+    true  // Randomize directions per pixel for digits mode
+  );
 
-  // Use random transition and set duration from speed control
-  packet.angleCmd.transition = getRandomTransition();
-  packet.angleCmd.duration = floatToDuration(currentDigitSpeed);
-
-  // Set left digit (digit 1) pattern (with right-align for "1")
-  DigitPattern& leftPattern = digitPatterns[leftDigit];
-  DigitPattern& spacePattern = digitPatterns[11];  // Space pattern for right-aligning "1"
-  for (int i = 0; i < 6; i++) {
-    uint8_t pixelId = digit1PixelIds[i];
-
-    // Random directions for each hand
-    RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-
-    if (leftDigit == 1) {
-      // Special handling for "1": right-align it
-      // The "1" pattern has the digit in column 0, we want it in column 1
-      // Pixel indices: 0,2,4 = column 0; 1,3,5 = column 1
-      if (i % 2 == 0) {
-        // Column 0: use space pattern
-        packet.angleCmd.setPixelAngles(pixelId,
-          spacePattern.angles[i][0],
-          spacePattern.angles[i][1],
-          spacePattern.angles[i][2],
-          dir1, dir2, dir3);
-        packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, spacePattern.opacity[i]);
-      } else {
-        // Column 1: use column 0 from "1" pattern (remap indices)
-        // i=1 → use pattern[0], i=3 → use pattern[2], i=5 → use pattern[4]
-        uint8_t sourceIdx = i - 1;  // Map column 1 to column 0 of source pattern
-        packet.angleCmd.setPixelAngles(pixelId,
-          leftPattern.angles[sourceIdx][0],
-          leftPattern.angles[sourceIdx][1],
-          leftPattern.angles[sourceIdx][2],
-          dir1, dir2, dir3);
-        packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, leftPattern.opacity[sourceIdx]);
-      }
-    } else {
-      // Other digits: use pattern as-is
-      packet.angleCmd.setPixelAngles(pixelId,
-        leftPattern.angles[i][0],
-        leftPattern.angles[i][1],
-        leftPattern.angles[i][2],
-        dir1, dir2, dir3);
-      packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, leftPattern.opacity[i]);
-    }
-  }
-
-  // Set right digit (digit 2) pattern
-  DigitPattern& rightPattern = digitPatterns[rightDigit];
-  for (int i = 0; i < 6; i++) {
-    uint8_t pixelId = digit2PixelIds[i];
-
-    // Random directions for each hand
-    RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-    RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-
-    packet.angleCmd.setPixelAngles(pixelId,
-      rightPattern.angles[i][0],
-      rightPattern.angles[i][1],
-      rightPattern.angles[i][2],
-      dir1, dir2, dir3);
-    packet.angleCmd.setPixelStyle(pixelId, currentDigitColor, rightPattern.opacity[i]);
-  }
-
-  // Send the packet
-  if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {
-    const char* digitNames[] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", " "};
-    Serial.print("Sent two digits: ");
-    Serial.print(digitNames[leftDigit]);
-    Serial.print(digitNames[rightDigit]);
-    Serial.print(" with transition: ");
-    Serial.print(getTransitionName(packet.angleCmd.transition));
-    Serial.print(", duration: ");
-    Serial.print(durationToFloat(packet.angleCmd.duration), 1);
-    Serial.println("s (targeting 12 pixels only)");
-  } else {
-    Serial.println("Failed to send two-digit packet!");
-  }
+  // Log the sent digits
+  const char* digitNames[] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", " "};
+  Serial.print("Sent two digits: ");
+  Serial.print(digitNames[leftDigit]);
+  Serial.print(digitNames[rightDigit]);
+  Serial.print(" with transition: ");
+  Serial.print(getTransitionName(transition));
+  Serial.print(", duration: ");
+  Serial.print(currentDigitSpeed, 1);
+  Serial.println("s (targeting 12 pixels only)");
 }
 
 void sendPing() {
