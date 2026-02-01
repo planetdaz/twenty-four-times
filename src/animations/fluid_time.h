@@ -57,7 +57,8 @@ enum MultiStageMode {
 enum FluidTimePhase {
   FLUID_IDLE,           // Ready to generate new pattern
   FLUID_SENDING_GROUPS, // Actively sending to groups with delays
-  FLUID_WAITING         // Waiting for animations to complete before next pattern
+  FLUID_WAITING,        // Waiting for animations to complete before next pattern
+  FLUID_HOLDING_TIME    // Holding time display for 5-7 seconds
 };
 
 FluidTimePhase fluidPhase = FLUID_IDLE;
@@ -65,6 +66,7 @@ uint8_t currentGroup = 0;
 uint8_t totalGroups = 0;
 unsigned long lastGroupSendTime = 0;
 unsigned long fluidAnimationStartTime = 0;
+unsigned long timeHoldStartTime = 0;
 
 // Current animation parameters (randomized each cycle)
 FluidPattern currentPattern;
@@ -90,7 +92,8 @@ struct FluidPatternData {
 // Time display tracking
 uint8_t currentMinute = 0;  // Current minute (0-59)
 unsigned long lastMinuteChange = 0;  // When minute last changed
-const unsigned long MINUTE_INTERVAL = 10000;  // Testing: 10 seconds (use 60000 for production)
+const unsigned long MINUTE_INTERVAL = 60000;  // 60 seconds per minute
+const unsigned long TIME_HOLD_DURATION = 6000;  // Hold time display for 6 seconds
 bool showingTime = false;  // True when displaying time instead of random
 bool shouldShowTimeNext = true;  // Flag to show time on next IDLE cycle (start with time display)
 
@@ -264,18 +267,34 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
     // Use digit patterns for time display
     uint8_t leftDigit = currentMinute / 10;
     uint8_t rightDigit = currentMinute % 10;
-    DigitPattern& leftPattern = digitPatterns[leftDigit];
+
+    // For left digit "1", right-align by using space in column 0
+    DigitPattern& leftPattern = (leftDigit == 1) ? digitPatterns[1] : digitPatterns[leftDigit];
+    DigitPattern& spacePattern = digitPatterns[11];  // Space pattern for right-aligning "1"
     DigitPattern& rightPattern = digitPatterns[rightDigit];
 
-    // Set left digit angles
+    // Set left digit angles (with right-align for "1")
     for (int i = 0; i < 6; i++) {
       uint8_t pixelId = digit1PixelIds[i];
-      packet.angleCmd.setPixelAngles(pixelId,
-        leftPattern.angles[i][0],
-        leftPattern.angles[i][1],
-        leftPattern.angles[i][2],
-        dir1, dir2, dir3);
-      packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, leftPattern.opacity[i]);
+
+      // For "1" in left position: use space for column 0 (pixels 0, 2, 4), "1" for column 1 (pixels 1, 3, 5)
+      if (leftDigit == 1 && (i == 0 || i == 2 || i == 4)) {
+        // Column 0: use space pattern (right-align the "1")
+        packet.angleCmd.setPixelAngles(pixelId,
+          spacePattern.angles[i][0],
+          spacePattern.angles[i][1],
+          spacePattern.angles[i][2],
+          dir1, dir2, dir3);
+        packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, spacePattern.opacity[i]);
+      } else {
+        // Normal pattern
+        packet.angleCmd.setPixelAngles(pixelId,
+          leftPattern.angles[i][0],
+          leftPattern.angles[i][1],
+          leftPattern.angles[i][2],
+          dir1, dir2, dir3);
+        packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, leftPattern.opacity[i]);
+      }
     }
 
     // Set right digit angles
@@ -594,8 +613,26 @@ void handleFluidTimeLoop(unsigned long currentTime) {
       unsigned long totalWaitTime = totalAnimationTime + 1500;  // Shorter pause for continuous flow
 
       if (currentTime - fluidAnimationStartTime >= totalWaitTime) {
-        Serial.println("Starting next pattern");
-        fluidPhase = FLUID_IDLE;
+        if (showingTime) {
+          // After showing time, hold it for 5-7 seconds
+          Serial.println("Holding time display");
+          fluidPhase = FLUID_HOLDING_TIME;
+          timeHoldStartTime = currentTime;
+        } else {
+          // Regular pattern, start next one
+          Serial.println("Starting next pattern");
+          fluidPhase = FLUID_IDLE;
+        }
+      }
+      break;
+    }
+
+    case FLUID_HOLDING_TIME: {
+      // Hold the time display for TIME_HOLD_DURATION
+      if (currentTime - timeHoldStartTime >= TIME_HOLD_DURATION) {
+        Serial.println("Time hold complete, back to random patterns");
+        showingTime = false;  // Clear time flag
+        fluidPhase = FLUID_IDLE;  // Go back to random patterns
       }
       break;
     }
