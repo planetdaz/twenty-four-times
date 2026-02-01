@@ -352,35 +352,62 @@ void buildGroupOrder() {
 
 // Send pattern to a specific group (column or row)
 void sendFluidPatternToGroup(uint8_t groupIndex) {
+  // When showing time, use consolidated digit display function
+  if (showingTime) {
+    // Calculate directions based on mode (same logic as before)
+    RotationDirection dir1, dir2, dir3;
+    if (currentDirMode == DIR_MODE_UNIFIED) {
+      dir1 = currentFluidPattern.dir1;
+      dir2 = currentFluidPattern.dir2;
+      dir3 = currentFluidPattern.dir3;
+    } else if (currentDirMode == DIR_MODE_ALTERNATING) {
+      if (groupIndex % 2 == 0) {
+        dir1 = DIR_CW;
+        dir2 = DIR_CW;
+        dir3 = DIR_CW;
+      } else {
+        dir1 = DIR_CCW;
+        dir2 = DIR_CCW;
+        dir3 = DIR_CCW;
+      }
+    } else {
+      dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+      dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+      dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    }
+
+    // Use consolidated function with calculated directions
+    sendTwoDigitTime(
+      currentMinute,
+      currentFluidPattern.colorIndex,
+      currentFluidPattern.transition,
+      currentFluidPattern.duration,
+      dir1, dir2, dir3
+    );
+    return;
+  }
+
+  // Non-time pattern display continues below
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
   packet.angleCmd.clearTargetMask();
   packet.angleCmd.transition = currentFluidPattern.transition;
   packet.angleCmd.duration = floatToDuration(currentFluidPattern.duration);
 
-  // When showing time, only target the 12 digit pixels
-  if (showingTime) {
-    // Target only digit pixels
-    for (int i = 0; i < 6; i++) {
-      packet.angleCmd.setTargetPixel(digit1PixelIds[i]);
-      packet.angleCmd.setTargetPixel(digit2PixelIds[i]);
+  // Determine which pixels to target based on pattern type
+  if (currentPattern == PATTERN_TOP_BOTTOM || currentPattern == PATTERN_BOTTOM_TOP) {
+    // Row-based: target all 8 pixels in the row
+    uint8_t row = groupOrder[groupIndex];
+    for (uint8_t col = 0; col < 8; col++) {
+      uint8_t pixelId = row * 8 + col;
+      packet.angleCmd.setTargetPixel(pixelId);
     }
   } else {
-    // Determine which pixels to target based on pattern type
-    if (currentPattern == PATTERN_TOP_BOTTOM || currentPattern == PATTERN_BOTTOM_TOP) {
-      // Row-based: target all 8 pixels in the row
-      uint8_t row = groupOrder[groupIndex];
-      for (uint8_t col = 0; col < 8; col++) {
-        uint8_t pixelId = row * 8 + col;
-        packet.angleCmd.setTargetPixel(pixelId);
-      }
-    } else {
-      // Column-based: target 3 pixels in the column
-      uint8_t col = groupOrder[groupIndex];
-      packet.angleCmd.setTargetPixel(col);       // Row 0
-      packet.angleCmd.setTargetPixel(col + 8);   // Row 1
-      packet.angleCmd.setTargetPixel(col + 16);  // Row 2
-    }
+    // Column-based: target 3 pixels in the column
+    uint8_t col = groupOrder[groupIndex];
+    packet.angleCmd.setTargetPixel(col);       // Row 0
+    packet.angleCmd.setTargetPixel(col + 8);   // Row 1
+    packet.angleCmd.setTargetPixel(col + 16);  // Row 2
   }
 
   // Generate directions based on mode
@@ -408,67 +435,8 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
     dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
   }
 
-  // Set angles/directions/style for all pixels
-  if (showingTime) {
-    // Use digit patterns for time display
-    uint8_t leftDigit = currentMinute / 10;
-    uint8_t rightDigit = currentMinute % 10;
-
-    DigitPattern& leftPattern = digitPatterns[leftDigit];
-    DigitPattern& spacePattern = digitPatterns[11];  // Space pattern for right-aligning "1"
-    DigitPattern& rightPattern = digitPatterns[rightDigit];
-
-    // Set left digit angles (with right-align for "1")
-    for (int i = 0; i < 6; i++) {
-      uint8_t pixelId = digit1PixelIds[i];
-
-      if (leftDigit == 1) {
-        // Special handling for "1": right-align it
-        // The "1" pattern has the digit in column 0, we want it in column 1
-        // Pixel indices: 0,2,4 = column 0; 1,3,5 = column 1
-        if (i % 2 == 0) {
-          // Column 0: use space pattern
-          packet.angleCmd.setPixelAngles(pixelId,
-            spacePattern.angles[i][0],
-            spacePattern.angles[i][1],
-            spacePattern.angles[i][2],
-            dir1, dir2, dir3);
-          packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, spacePattern.opacity[i]);
-        } else {
-          // Column 1: use column 0 from "1" pattern (remap indices)
-          // i=1 → use pattern[0], i=3 → use pattern[2], i=5 → use pattern[4]
-          uint8_t sourceIdx = i - 1;  // Map column 1 to column 0 of source pattern
-          packet.angleCmd.setPixelAngles(pixelId,
-            leftPattern.angles[sourceIdx][0],
-            leftPattern.angles[sourceIdx][1],
-            leftPattern.angles[sourceIdx][2],
-            dir1, dir2, dir3);
-          packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, leftPattern.opacity[sourceIdx]);
-        }
-      } else {
-        // Other digits: use pattern as-is
-        packet.angleCmd.setPixelAngles(pixelId,
-          leftPattern.angles[i][0],
-          leftPattern.angles[i][1],
-          leftPattern.angles[i][2],
-          dir1, dir2, dir3);
-        packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, leftPattern.opacity[i]);
-      }
-    }
-
-    // Set right digit angles
-    for (int i = 0; i < 6; i++) {
-      uint8_t pixelId = digit2PixelIds[i];
-      packet.angleCmd.setPixelAngles(pixelId,
-        rightPattern.angles[i][0],
-        rightPattern.angles[i][1],
-        rightPattern.angles[i][2],
-        dir1, dir2, dir3);
-      packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, rightPattern.opacity[i]);
-    }
-  } else {
-    // Use random pattern for all pixels WITH MIRRORING
-    for (int i = 0; i < MAX_PIXELS; i++) {
+  // Use random pattern for all pixels WITH MIRRORING
+  for (int i = 0; i < MAX_PIXELS; i++) {
       // Apply mirroring based on pixel position
       float mirroredAngle1, mirroredAngle2, mirroredAngle3;
       getMirroredAngles(i,
@@ -483,7 +451,6 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
         mirroredAngle3,
         dir1, dir2, dir3);
       packet.angleCmd.setPixelStyle(i, currentFluidPattern.colorIndex, 255);
-    }
   }
 
   ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket));

@@ -254,6 +254,7 @@ uint8_t currentDigitColor = 0;
 float currentDigitSpeed = 2.0;
 
 // Include animation headers after DigitPattern definition
+#include "animations/digit_display.h"  // Shared digit display helper
 #include "animations/fluid_time.h"
 #include "animations/orbit_time.h"
 

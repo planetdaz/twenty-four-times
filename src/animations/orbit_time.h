@@ -135,112 +135,13 @@ void sendOrbitCommands() {
 
 // Send time digit display command
 void sendOrbitTimeDisplay() {
-  ESPNowPacket packet;
-  packet.angleCmd.command = CMD_SET_ANGLES;
-  packet.angleCmd.clearTargetMask();
-
-  // Get current minute digits
-  uint8_t leftDigit = orbitCurrentMinute / 10;
-  uint8_t rightDigit = orbitCurrentMinute % 10;
-
-  DigitPattern& leftPattern = digitPatterns[leftDigit];
-  DigitPattern& rightPattern = digitPatterns[rightDigit];
-  DigitPattern& spacePattern = digitPatterns[11];  // Space pattern
-
-  // Target only digit pixels (12 pixels total)
-  for (int i = 0; i < 6; i++) {
-    packet.angleCmd.setTargetPixel(digit1PixelIds[i]);
-    packet.angleCmd.setTargetPixel(digit2PixelIds[i]);
-  }
-
-  // Set left digit pixels
-  for (int i = 0; i < 6; i++) {
-    uint8_t pixelId = digit1PixelIds[i];
-
-    // Special handling for digit "1" - right-align it
-    if (leftDigit == 1) {
-      if (i % 2 == 0) {
-        // Column 0: use space pattern
-        packet.angleCmd.setPixelAngles(pixelId,
-          spacePattern.angles[i][0],
-          spacePattern.angles[i][1],
-          spacePattern.angles[i][2],
-          DIR_SHORTEST,
-          DIR_SHORTEST,
-          DIR_SHORTEST);
-        packet.angleCmd.setPixelStyle(pixelId, orbitColorIndex, spacePattern.opacity[i]);
-      } else {
-        // Column 1: use column 0 from "1" pattern (remap indices)
-        uint8_t sourceIdx = i - 1;
-        packet.angleCmd.setPixelAngles(pixelId,
-          leftPattern.angles[sourceIdx][0],
-          leftPattern.angles[sourceIdx][1],
-          leftPattern.angles[sourceIdx][2],
-          DIR_SHORTEST,
-          DIR_SHORTEST,
-          DIR_SHORTEST);
-        packet.angleCmd.setPixelStyle(pixelId, orbitColorIndex, leftPattern.opacity[sourceIdx]);
-      }
-    } else {
-      // Normal digit display
-      packet.angleCmd.setPixelAngles(pixelId,
-        leftPattern.angles[i][0],
-        leftPattern.angles[i][1],
-        leftPattern.angles[i][2],
-        DIR_SHORTEST,
-        DIR_SHORTEST,
-        DIR_SHORTEST);
-      packet.angleCmd.setPixelStyle(pixelId, orbitColorIndex, leftPattern.opacity[i]);
-    }
-  }
-
-  // Set right digit pixels
-  for (int i = 0; i < 6; i++) {
-    uint8_t pixelId = digit2PixelIds[i];
-
-    // Special handling for digit "1" - right-align it
-    if (rightDigit == 1) {
-      if (i % 2 == 0) {
-        // Column 0: use space pattern
-        packet.angleCmd.setPixelAngles(pixelId,
-          spacePattern.angles[i][0],
-          spacePattern.angles[i][1],
-          spacePattern.angles[i][2],
-          DIR_SHORTEST,
-          DIR_SHORTEST,
-          DIR_SHORTEST);
-        packet.angleCmd.setPixelStyle(pixelId, orbitColorIndex, spacePattern.opacity[i]);
-      } else {
-        // Column 1: use column 0 from "1" pattern
-        uint8_t sourceIdx = i - 1;
-        packet.angleCmd.setPixelAngles(pixelId,
-          rightPattern.angles[sourceIdx][0],
-          rightPattern.angles[sourceIdx][1],
-          rightPattern.angles[sourceIdx][2],
-          DIR_SHORTEST,
-          DIR_SHORTEST,
-          DIR_SHORTEST);
-        packet.angleCmd.setPixelStyle(pixelId, orbitColorIndex, rightPattern.opacity[sourceIdx]);
-      }
-    } else {
-      // Normal digit display
-      packet.angleCmd.setPixelAngles(pixelId,
-        rightPattern.angles[i][0],
-        rightPattern.angles[i][1],
-        rightPattern.angles[i][2],
-        DIR_SHORTEST,
-        DIR_SHORTEST,
-        DIR_SHORTEST);
-      packet.angleCmd.setPixelStyle(pixelId, orbitColorIndex, rightPattern.opacity[i]);
-    }
-  }
-
-  // Use EASE_IN_OUT for smooth transition to time
-  packet.angleCmd.transition = TRANSITION_EASE_IN_OUT;
-  packet.angleCmd.duration = floatToDuration(ORBIT_TIME_TRANSITION_DURATION / 1000.0f);
-
-  ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket));
-  lastCommandTime = millis();
+  // Use consolidated digit display function
+  sendTwoDigitTime(
+    orbitCurrentMinute,
+    orbitColorIndex,
+    TRANSITION_EASE_IN_OUT,
+    ORBIT_TIME_TRANSITION_DURATION / 1000.0f
+  );
 }
 
 // Update display
