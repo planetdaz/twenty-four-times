@@ -6,7 +6,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 18
+#define FIRMWARE_VERSION_MINOR 19
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -833,10 +833,8 @@ void handleProvisionTouch(uint16_t x, uint16_t y) {
   } else if (provisionPhase == PHASE_DISCOVERING) {
     // Stop button (20, 160, 130, 50)
     if (x >= 20 && x <= 150 && y >= 160 && y <= 210) {
-      // Clear highlight mode on all discovered pixels
-      sendHighlightToAll(HIGHLIGHT_IDLE);
-      // Also need to exit highlight mode on pixels, so send a command to turn off highlight
-      // Actually, let's just leave them showing "!" until assignment or exit
+      // Send reset to clear highlight mode on all pixels
+      sendReset();
       provisionPhase = PHASE_IDLE;
       drawProvisionScreen();
       return;
@@ -1334,15 +1332,28 @@ void sendPing() {
 }
 
 // Send reset command to all pixels (clears special modes)
+// Sends multiple times to ensure all pixels receive it
 void sendReset() {
   ESPNowPacket packet;
   packet.command = CMD_RESET;
 
-  if (ESPNowComm::sendPacket(&packet, sizeof(CommandType))) {
-    Serial.println("Reset sent to all pixels");
-  } else {
-    Serial.println("Failed to send reset");
+  Serial.println("Sending reset to all pixels (3x for reliability)...");
+
+  // Send reset 3 times with delays to ensure all pixels receive it
+  for (int i = 0; i < 3; i++) {
+    if (ESPNowComm::sendPacket(&packet, sizeof(CommandType))) {
+      Serial.print("Reset sent (attempt ");
+      Serial.print(i + 1);
+      Serial.println("/3)");
+    } else {
+      Serial.print("Failed to send reset (attempt ");
+      Serial.print(i + 1);
+      Serial.println("/3)");
+    }
+    if (i < 2) delay(50);  // 50ms delay between sends
   }
+
+  Serial.println("Reset sequence complete");
 }
 
 // ===== OTA UPDATE FUNCTIONS =====
