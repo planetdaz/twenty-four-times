@@ -1607,8 +1607,8 @@ void drawOTAScreen() {
     tft.fillRoundRect(10, 195, 120, 30, 4, TFT_DARKGREEN);
     tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
     tft.setTextSize(2);
-    tft.setCursor(20, 200);
-    tft.println("Send Update");
+    tft.setCursor(30, 200);
+    tft.println("Send");
 
     // "Clear All" button (middle)
     tft.fillRoundRect(140, 195, 90, 30, 4, TFT_ORANGE);
