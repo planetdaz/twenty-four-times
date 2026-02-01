@@ -13,6 +13,7 @@ extern TFT_eSPI tft;
 extern unsigned long lastCommandTime;
 extern unsigned long lastPingTime;
 void sendPing();  // External function to ping pixels
+uint8_t getCurrentMinute();  // Get current minute from real-time clock
 
 // Digit pattern support (from master.cpp)
 // DigitPattern struct already defined in master.cpp before this header is included
@@ -695,13 +696,13 @@ void handleFluidTimeLoop(unsigned long currentTime) {
     lastPingTime = currentTime;
   }
 
-  // Check if it's time to change minute and show time
+  // Check if it's time to show time display
   if (currentTime - lastMinuteChange >= MINUTE_INTERVAL) {
-    currentMinute = (currentMinute + 1) % 60;  // Loop 0-59
+    currentMinute = getCurrentMinute();  // Get current real-time minute
     lastMinuteChange = currentTime;
     shouldShowTimeNext = true;  // Set flag to show time on next IDLE cycle
 
-    Serial.print("Minute changed to: ");
+    Serial.print("Showing current time: ");
     Serial.print(currentMinute / 10);
     Serial.println(currentMinute % 10);
   }

@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <Wire.h>
+#include <WiFi.h>
 #include <TFT_eSPI.h>
 #include <ESPNowComm.h>
 #include "animations/unity.h"
@@ -8,7 +9,15 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 32
+#define FIRMWARE_VERSION_MINOR 33
+
+// ===== WIFI & TIME CONFIGURATION =====
+const char* WIFI_SSID = "Frontier5664";
+const char* WIFI_PASSWORD = "8854950591";
+const char* NTP_SERVER = "pool.ntp.org";
+const long GMT_OFFSET_SEC = -6 * 3600;  // UTC-6 (CST)
+const int DAYLIGHT_OFFSET_SEC = 0;      // Set to 3600 if DST is active
+bool wifiConnected = false;
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -1987,6 +1996,64 @@ void handleVersionTouch(uint16_t x, uint16_t y) {
   }
 }
 
+// ===== WIFI & TIME FUNCTIONS =====
+
+void connectWiFi() {
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.println("\nWiFi connected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+
+    // Configure NTP
+    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+    Serial.println("NTP configured, waiting for time sync...");
+
+    // Wait for time to sync (up to 5 seconds)
+    struct tm timeinfo;
+    int syncAttempts = 0;
+    while (!getLocalTime(&timeinfo) && syncAttempts < 10) {
+      delay(500);
+      syncAttempts++;
+    }
+
+    if (getLocalTime(&timeinfo)) {
+      Serial.println("Time synchronized!");
+      Serial.printf("Current time: %02d:%02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    } else {
+      Serial.println("Failed to sync time");
+    }
+  } else {
+    Serial.println("\nWiFi connection failed!");
+  }
+}
+
+// Get current minute from real-time clock (0-59)
+uint8_t getCurrentMinute() {
+  if (!wifiConnected) {
+    return 0;  // Return 0 if no WiFi
+  }
+
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    return timeinfo.tm_min;  // Returns 0-59
+  }
+
+  return 0;  // Return 0 if time not available
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -1995,6 +2062,10 @@ void setup() {
   Serial.println("Twenty-Four Times - ESP-NOW Master");
   Serial.println(BOARD_NAME);
   Serial.println("=======================================\n");
+
+  // Connect to WiFi and sync time
+  connectWiFi();
+  Serial.println();
 
   // Initialize backlight
   pinMode(TFT_BACKLIGHT, OUTPUT);
