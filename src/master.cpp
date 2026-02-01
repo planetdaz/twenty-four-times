@@ -4,11 +4,11 @@
 #include <TFT_eSPI.h>
 #include <ESPNowComm.h>
 #include "animations/unity.h"
-#include "animations/fluid_time.h"
+// fluid_time.h included later after DigitPattern definition
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 25
+#define FIRMWARE_VERSION_MINOR 26
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -241,6 +241,9 @@ uint8_t currentDigitColor = 0;
 
 // Current speed for digits mode (duration in seconds)
 float currentDigitSpeed = 2.0;
+
+// Include fluid_time after DigitPattern definition
+#include "animations/fluid_time.h"
 
 // Auto-cycle mode variables (cycles 00-99 for two-digit display)
 bool autoCycleEnabled = false;

@@ -14,6 +14,12 @@ extern unsigned long lastCommandTime;
 extern unsigned long lastPingTime;
 void sendPing();  // External function to ping pixels
 
+// Digit pattern support (from master.cpp)
+// DigitPattern struct already defined in master.cpp before this header is included
+extern DigitPattern digitPatterns[];
+extern const uint8_t digit1PixelIds[6];  // Left digit pixels
+extern const uint8_t digit2PixelIds[6];  // Right digit pixels
+
 // Color definitions (from master.cpp)
 #define COLOR_BG      TFT_BLACK
 #define COLOR_TEXT    TFT_WHITE
@@ -80,6 +86,13 @@ struct FluidPatternData {
   float duration;
   unsigned long delay;  // Per-group delay
 } currentFluidPattern;
+
+// Time display tracking
+uint8_t currentMinute = 0;  // Current minute (0-59)
+unsigned long lastMinuteChange = 0;  // When minute last changed
+const unsigned long MINUTE_INTERVAL = 10000;  // Testing: 10 seconds (use 60000 for production)
+bool showingTime = false;  // True when displaying time instead of random
+bool shouldShowTimeNext = true;  // Flag to show time on next IDLE cycle (start with time display)
 
 // ===== HELPER FUNCTIONS =====
 
@@ -196,20 +209,29 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
   packet.angleCmd.transition = currentFluidPattern.transition;
   packet.angleCmd.duration = floatToDuration(currentFluidPattern.duration);
 
-  // Determine which pixels to target based on pattern type
-  if (currentPattern == PATTERN_TOP_BOTTOM || currentPattern == PATTERN_BOTTOM_TOP) {
-    // Row-based: target all 8 pixels in the row
-    uint8_t row = groupOrder[groupIndex];
-    for (uint8_t col = 0; col < 8; col++) {
-      uint8_t pixelId = row * 8 + col;
-      packet.angleCmd.setTargetPixel(pixelId);
+  // When showing time, only target the 12 digit pixels
+  if (showingTime) {
+    // Target only digit pixels
+    for (int i = 0; i < 6; i++) {
+      packet.angleCmd.setTargetPixel(digit1PixelIds[i]);
+      packet.angleCmd.setTargetPixel(digit2PixelIds[i]);
     }
   } else {
-    // Column-based: target 3 pixels in the column
-    uint8_t col = groupOrder[groupIndex];
-    packet.angleCmd.setTargetPixel(col);       // Row 0
-    packet.angleCmd.setTargetPixel(col + 8);   // Row 1
-    packet.angleCmd.setTargetPixel(col + 16);  // Row 2
+    // Determine which pixels to target based on pattern type
+    if (currentPattern == PATTERN_TOP_BOTTOM || currentPattern == PATTERN_BOTTOM_TOP) {
+      // Row-based: target all 8 pixels in the row
+      uint8_t row = groupOrder[groupIndex];
+      for (uint8_t col = 0; col < 8; col++) {
+        uint8_t pixelId = row * 8 + col;
+        packet.angleCmd.setTargetPixel(pixelId);
+      }
+    } else {
+      // Column-based: target 3 pixels in the column
+      uint8_t col = groupOrder[groupIndex];
+      packet.angleCmd.setTargetPixel(col);       // Row 0
+      packet.angleCmd.setTargetPixel(col + 8);   // Row 1
+      packet.angleCmd.setTargetPixel(col + 16);  // Row 2
+    }
   }
 
   // Generate directions based on mode
@@ -238,13 +260,44 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
   }
 
   // Set angles/directions/style for all pixels
-  for (int i = 0; i < MAX_PIXELS; i++) {
-    packet.angleCmd.setPixelAngles(i,
-      currentFluidPattern.angle1,
-      currentFluidPattern.angle2,
-      currentFluidPattern.angle3,
-      dir1, dir2, dir3);
-    packet.angleCmd.setPixelStyle(i, currentFluidPattern.colorIndex, 255);
+  if (showingTime) {
+    // Use digit patterns for time display
+    uint8_t leftDigit = currentMinute / 10;
+    uint8_t rightDigit = currentMinute % 10;
+    DigitPattern& leftPattern = digitPatterns[leftDigit];
+    DigitPattern& rightPattern = digitPatterns[rightDigit];
+
+    // Set left digit angles
+    for (int i = 0; i < 6; i++) {
+      uint8_t pixelId = digit1PixelIds[i];
+      packet.angleCmd.setPixelAngles(pixelId,
+        leftPattern.angles[i][0],
+        leftPattern.angles[i][1],
+        leftPattern.angles[i][2],
+        dir1, dir2, dir3);
+      packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, leftPattern.opacity[i]);
+    }
+
+    // Set right digit angles
+    for (int i = 0; i < 6; i++) {
+      uint8_t pixelId = digit2PixelIds[i];
+      packet.angleCmd.setPixelAngles(pixelId,
+        rightPattern.angles[i][0],
+        rightPattern.angles[i][1],
+        rightPattern.angles[i][2],
+        dir1, dir2, dir3);
+      packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, rightPattern.opacity[i]);
+    }
+  } else {
+    // Use random pattern for all pixels
+    for (int i = 0; i < MAX_PIXELS; i++) {
+      packet.angleCmd.setPixelAngles(i,
+        currentFluidPattern.angle1,
+        currentFluidPattern.angle2,
+        currentFluidPattern.angle3,
+        dir1, dir2, dir3);
+      packet.angleCmd.setPixelStyle(i, currentFluidPattern.colorIndex, 255);
+    }
   }
 
   ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket));
@@ -317,6 +370,66 @@ void generateFluidPattern() {
   Serial.println(getTransitionName(currentFluidPattern.transition));
 }
 
+// Generate time display pattern (uses digit angles instead of random)
+void generateFluidTimePattern() {
+  // Randomize pattern type
+  currentPattern = (FluidPattern)random(6);
+
+  // Randomize direction mode
+  currentDirMode = (DirectionMode)random(3);
+
+  // For time display, use single wave (no multi-stage)
+  currentStageMode = STAGE_SINGLE;
+
+  // Randomize timing
+  baseGroupDelay = random(150, 501);  // 150-500ms
+  baseDuration = getFluidDuration();  // 6-10 seconds
+
+  // Build group order for this pattern
+  buildGroupOrder();
+
+  // Get digit patterns for current minute
+  uint8_t leftDigit = currentMinute / 10;   // Tens digit
+  uint8_t rightDigit = currentMinute % 10;  // Ones digit
+
+  // Keep current color (don't generate new one)
+  // Color was already set in previous pattern and stored in currentFluidPattern.colorIndex
+
+  currentFluidPattern.transition = getRandomTransition();
+
+  // Apply duration variation (±15%)
+  float variation = 0.85f + (random(31) / 100.0f);  // 0.85 to 1.15
+  currentFluidPattern.duration = baseDuration * variation;
+
+  // For unified mode, pick one direction for all hands
+  if (currentDirMode == DIR_MODE_UNIFIED) {
+    RotationDirection unifiedDir = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    currentFluidPattern.dir1 = unifiedDir;
+    currentFluidPattern.dir2 = unifiedDir;
+    currentFluidPattern.dir3 = unifiedDir;
+  } else {
+    currentFluidPattern.dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    currentFluidPattern.dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+    currentFluidPattern.dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+  }
+
+  Serial.println("=== Fluid Time Display ===");
+  Serial.print("Time: ");
+  Serial.print(leftDigit);
+  Serial.println(rightDigit);
+  Serial.print("Pattern: ");
+  Serial.println(getPatternName(currentPattern));
+  Serial.print("Direction Mode: ");
+  Serial.println(getDirectionModeName(currentDirMode));
+  Serial.print("Duration: ");
+  Serial.print(currentFluidPattern.duration, 1);
+  Serial.println("s");
+  Serial.print("Transition: ");
+  Serial.println(getTransitionName(currentFluidPattern.transition));
+
+  showingTime = true;
+}
+
 // Update the display to show current state
 void updateFluidTimeDisplay() {
   tft.fillScreen(COLOR_BG);
@@ -328,15 +441,29 @@ void updateFluidTimeDisplay() {
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
   tft.setTextSize(1);
 
-  tft.setCursor(10, 35);
+  // Show if displaying time
+  if (showingTime) {
+    tft.setCursor(10, 30);
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
+    tft.setTextSize(2);
+    tft.print("Time: ");
+    tft.print(currentMinute / 10);
+    tft.println(currentMinute % 10);
+    tft.setTextSize(1);
+  }
+
+  tft.setCursor(10, showingTime ? 50 : 35);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
   tft.print("Pattern: ");
   tft.println(getPatternName(currentPattern));
 
-  tft.setCursor(10, 50);
+  int yOffset = showingTime ? 15 : 0;
+
+  tft.setCursor(10, 50 + yOffset);
   tft.print("Mode: ");
   tft.println(getDirectionModeName(currentDirMode));
 
-  tft.setCursor(10, 65);
+  tft.setCursor(10, 65 + yOffset);
   tft.print("Stage: ");
   tft.print(getStageModeName(currentStageMode));
   if (currentStageMode != STAGE_SINGLE) {
@@ -345,24 +472,24 @@ void updateFluidTimeDisplay() {
     tft.print("/2)");
   }
 
-  tft.setCursor(10, 85);
+  tft.setCursor(10, 85 + yOffset);
   tft.print("Transition: ");
   tft.println(getTransitionName(currentFluidPattern.transition));
 
-  tft.setCursor(10, 100);
+  tft.setCursor(10, 100 + yOffset);
   tft.print("Duration: ");
   tft.print(currentFluidPattern.duration, 1);
   tft.println("s");
 
   // Show progress
-  tft.setCursor(10, 120);
+  tft.setCursor(10, 120 + yOffset);
   tft.setTextColor(TFT_CYAN, COLOR_BG);
   tft.print("Progress: ");
   tft.print(currentGroup + 1);  // Display 1-based counting
   tft.print(" / ");
   tft.println(totalGroups);
 
-  tft.setCursor(10, 140);
+  tft.setCursor(10, 140 + yOffset);
   tft.setTextColor(TFT_YELLOW, COLOR_BG);
   tft.println("Touch to return");
 }
@@ -376,10 +503,29 @@ void handleFluidTimeLoop(unsigned long currentTime) {
     lastPingTime = currentTime;
   }
 
+  // Check if it's time to change minute and show time
+  if (currentTime - lastMinuteChange >= MINUTE_INTERVAL) {
+    currentMinute = (currentMinute + 1) % 60;  // Loop 0-59
+    lastMinuteChange = currentTime;
+    shouldShowTimeNext = true;  // Set flag to show time on next IDLE cycle
+
+    Serial.print("Minute changed to: ");
+    Serial.print(currentMinute / 10);
+    Serial.println(currentMinute % 10);
+  }
+
   switch (fluidPhase) {
     case FLUID_IDLE: {
-      // Generate new pattern parameters
-      generateFluidPattern();
+      // Decide whether to show time or random pattern
+      if (shouldShowTimeNext) {
+        // Generate time display pattern
+        generateFluidTimePattern();
+        shouldShowTimeNext = false;  // Clear flag
+      } else {
+        // Generate random pattern
+        generateFluidPattern();
+        showingTime = false;
+      }
       currentStage = 0;
 
       // Send to first group immediately
