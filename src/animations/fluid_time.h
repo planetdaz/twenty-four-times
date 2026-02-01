@@ -51,6 +51,17 @@ enum MultiStageMode {
   STAGE_DOUBLE_WAVE  // Send second wave partway through first
 };
 
+// Mirror/symmetry modes for kaleidoscopic effects
+enum MirrorMode {
+  MIRROR_NONE,           // All pixels same (current behavior)
+  MIRROR_HORIZONTAL,     // Horizontal pairs mirror left-right
+  MIRROR_VERTICAL,       // Vertical pairs mirror up-down
+  MIRROR_QUAD,           // 2x2 groups mirror in all directions
+  MIRROR_FULL_LR,        // Entire display mirrors left-right
+  MIRROR_FULL_UD,        // Entire display mirrors up-down
+  MIRROR_KALEIDOSCOPE    // Complex radial mirroring
+};
+
 // ===== STATE TRACKING =====
 
 // Phase tracking
@@ -72,6 +83,7 @@ unsigned long timeHoldStartTime = 0;
 FluidPattern currentPattern;
 DirectionMode currentDirMode;
 MultiStageMode currentStageMode;
+MirrorMode currentMirrorMode;
 uint8_t currentStage = 0;  // For multi-stage animations (0 or 1)
 unsigned long baseGroupDelay;
 float baseDuration;
@@ -138,6 +150,138 @@ const char* getStageModeName(MultiStageMode mode) {
     case STAGE_PING_PONG: return "Ping-Pong";
     case STAGE_DOUBLE_WAVE: return "Double Wave";
     default: return "Unknown";
+  }
+}
+
+// Get mirror mode name for display
+const char* getMirrorModeName(MirrorMode mode) {
+  switch (mode) {
+    case MIRROR_NONE: return "None";
+    case MIRROR_HORIZONTAL: return "Horiz Pairs";
+    case MIRROR_VERTICAL: return "Vert Pairs";
+    case MIRROR_QUAD: return "Quad Groups";
+    case MIRROR_FULL_LR: return "Full L-R";
+    case MIRROR_FULL_UD: return "Full U-D";
+    case MIRROR_KALEIDOSCOPE: return "Kaleidoscope";
+    default: return "Unknown";
+  }
+}
+
+// Mirror angle left-right (swap left/right)
+inline float mirrorAngleLR(float angle) {
+  // 0° stays 0°, 90° becomes 270°, 180° stays 180°, 270° becomes 90°
+  if (angle == 90.0f) return 270.0f;
+  if (angle == 270.0f) return 90.0f;
+  return angle;  // 0° and 180° unchanged
+}
+
+// Mirror angle up-down (swap up/down)
+inline float mirrorAngleUD(float angle) {
+  // 0° becomes 180°, 90° stays 90°, 180° becomes 0°, 270° stays 270°
+  if (angle == 0.0f) return 180.0f;
+  if (angle == 180.0f) return 0.0f;
+  return angle;  // 90° and 270° unchanged
+}
+
+// Apply mirroring to angles based on pixel position
+// Returns mirrored angles for the given pixel based on current mirror mode
+void getMirroredAngles(uint8_t pixelId, float baseAngle1, float baseAngle2, float baseAngle3,
+                       float& outAngle1, float& outAngle2, float& outAngle3) {
+  // Calculate row and column from pixel ID
+  uint8_t row = pixelId / 8;
+  uint8_t col = pixelId % 8;
+
+  // Start with base angles
+  outAngle1 = baseAngle1;
+  outAngle2 = baseAngle2;
+  outAngle3 = baseAngle3;
+
+  switch (currentMirrorMode) {
+    case MIRROR_NONE:
+      // No mirroring, return base angles
+      break;
+
+    case MIRROR_HORIZONTAL:
+      // Horizontal pairs: mirror within each pair (0-1, 2-3, 4-5, 6-7)
+      if (col % 2 == 1) {  // Odd columns mirror left-right
+        outAngle1 = mirrorAngleLR(baseAngle1);
+        outAngle2 = mirrorAngleLR(baseAngle2);
+        outAngle3 = mirrorAngleLR(baseAngle3);
+      }
+      break;
+
+    case MIRROR_VERTICAL:
+      // Vertical pairs: row 0 and row 2 mirror, row 1 is center
+      if (row == 2) {  // Bottom row mirrors top row
+        outAngle1 = mirrorAngleUD(baseAngle1);
+        outAngle2 = mirrorAngleUD(baseAngle2);
+        outAngle3 = mirrorAngleUD(baseAngle3);
+      }
+      break;
+
+    case MIRROR_QUAD: {
+      // 2x2 quad groups: mirror both horizontally and vertically
+      // Treat columns in pairs (0-1, 2-3, 4-5, 6-7)
+      bool mirrorH = (col % 2 == 1);
+      bool mirrorV = (row == 2);  // Bottom row mirrors top
+
+      if (mirrorH && mirrorV) {
+        // Mirror both ways
+        outAngle1 = mirrorAngleUD(mirrorAngleLR(baseAngle1));
+        outAngle2 = mirrorAngleUD(mirrorAngleLR(baseAngle2));
+        outAngle3 = mirrorAngleUD(mirrorAngleLR(baseAngle3));
+      } else if (mirrorH) {
+        // Mirror left-right only
+        outAngle1 = mirrorAngleLR(baseAngle1);
+        outAngle2 = mirrorAngleLR(baseAngle2);
+        outAngle3 = mirrorAngleLR(baseAngle3);
+      } else if (mirrorV) {
+        // Mirror up-down only
+        outAngle1 = mirrorAngleUD(baseAngle1);
+        outAngle2 = mirrorAngleUD(baseAngle2);
+        outAngle3 = mirrorAngleUD(baseAngle3);
+      }
+      break;
+    }
+
+    case MIRROR_FULL_LR:
+      // Full left-right mirror: col 0-3 are base, col 4-7 mirror
+      if (col >= 4) {
+        outAngle1 = mirrorAngleLR(baseAngle1);
+        outAngle2 = mirrorAngleLR(baseAngle2);
+        outAngle3 = mirrorAngleLR(baseAngle3);
+      }
+      break;
+
+    case MIRROR_FULL_UD:
+      // Full up-down mirror: row 0 is base, rows 1-2 mirror
+      if (row >= 1) {
+        outAngle1 = mirrorAngleUD(baseAngle1);
+        outAngle2 = mirrorAngleUD(baseAngle2);
+        outAngle3 = mirrorAngleUD(baseAngle3);
+      }
+      break;
+
+    case MIRROR_KALEIDOSCOPE: {
+      // Kaleidoscope: combine full L-R and U-D mirroring
+      bool kalMirrorH = (col >= 4);
+      bool kalMirrorV = (row >= 1);
+
+      if (kalMirrorH && kalMirrorV) {
+        outAngle1 = mirrorAngleUD(mirrorAngleLR(baseAngle1));
+        outAngle2 = mirrorAngleUD(mirrorAngleLR(baseAngle2));
+        outAngle3 = mirrorAngleUD(mirrorAngleLR(baseAngle3));
+      } else if (kalMirrorH) {
+        outAngle1 = mirrorAngleLR(baseAngle1);
+        outAngle2 = mirrorAngleLR(baseAngle2);
+        outAngle3 = mirrorAngleLR(baseAngle3);
+      } else if (kalMirrorV) {
+        outAngle1 = mirrorAngleUD(baseAngle1);
+        outAngle2 = mirrorAngleUD(baseAngle2);
+        outAngle3 = mirrorAngleUD(baseAngle3);
+      }
+      break;
+    }
   }
 }
 
@@ -268,8 +412,7 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
     uint8_t leftDigit = currentMinute / 10;
     uint8_t rightDigit = currentMinute % 10;
 
-    // For left digit "1", right-align by using space in column 0
-    DigitPattern& leftPattern = (leftDigit == 1) ? digitPatterns[1] : digitPatterns[leftDigit];
+    DigitPattern& leftPattern = digitPatterns[leftDigit];
     DigitPattern& spacePattern = digitPatterns[11];  // Space pattern for right-aligning "1"
     DigitPattern& rightPattern = digitPatterns[rightDigit];
 
@@ -277,9 +420,10 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
     for (int i = 0; i < 6; i++) {
       uint8_t pixelId = digit1PixelIds[i];
 
-      // For "1" in left position: use space for column 0 (pixels 0, 2, 4), "1" for column 1 (pixels 1, 3, 5)
-      if (leftDigit == 1 && (i == 0 || i == 2 || i == 4)) {
-        // Column 0: use space pattern (right-align the "1")
+      // For "1" in left position: use space for column 0, "1" pattern for column 1
+      // Pixel indices: 0,2,4 = column 0; 1,3,5 = column 1
+      if (leftDigit == 1 && (i % 2 == 0)) {
+        // Column 0 (even indices): use space pattern (right-align the "1")
         packet.angleCmd.setPixelAngles(pixelId,
           spacePattern.angles[i][0],
           spacePattern.angles[i][1],
@@ -287,7 +431,7 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
           dir1, dir2, dir3);
         packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, spacePattern.opacity[i]);
       } else {
-        // Normal pattern
+        // Column 1 (odd indices) or other digits: use digit pattern
         packet.angleCmd.setPixelAngles(pixelId,
           leftPattern.angles[i][0],
           leftPattern.angles[i][1],
@@ -308,12 +452,20 @@ void sendFluidPatternToGroup(uint8_t groupIndex) {
       packet.angleCmd.setPixelStyle(pixelId, currentFluidPattern.colorIndex, rightPattern.opacity[i]);
     }
   } else {
-    // Use random pattern for all pixels
+    // Use random pattern for all pixels WITH MIRRORING
     for (int i = 0; i < MAX_PIXELS; i++) {
-      packet.angleCmd.setPixelAngles(i,
+      // Apply mirroring based on pixel position
+      float mirroredAngle1, mirroredAngle2, mirroredAngle3;
+      getMirroredAngles(i,
         currentFluidPattern.angle1,
         currentFluidPattern.angle2,
         currentFluidPattern.angle3,
+        mirroredAngle1, mirroredAngle2, mirroredAngle3);
+
+      packet.angleCmd.setPixelAngles(i,
+        mirroredAngle1,
+        mirroredAngle2,
+        mirroredAngle3,
         dir1, dir2, dir3);
       packet.angleCmd.setPixelStyle(i, currentFluidPattern.colorIndex, 255);
     }
@@ -329,6 +481,9 @@ void generateFluidPattern() {
 
   // Randomize direction mode
   currentDirMode = (DirectionMode)random(3);
+
+  // Randomize mirror mode (all modes equally likely)
+  currentMirrorMode = (MirrorMode)random(7);
 
   // Randomize multi-stage mode (favor single wave slightly)
   int stageRand = random(10);
@@ -377,6 +532,8 @@ void generateFluidPattern() {
   Serial.println(getPatternName(currentPattern));
   Serial.print("Direction Mode: ");
   Serial.println(getDirectionModeName(currentDirMode));
+  Serial.print("Mirror Mode: ");
+  Serial.println(getMirrorModeName(currentMirrorMode));
   Serial.print("Stage Mode: ");
   Serial.println(getStageModeName(currentStageMode));
   Serial.print("Base Delay: ");
@@ -396,6 +553,9 @@ void generateFluidTimePattern() {
 
   // Randomize direction mode
   currentDirMode = (DirectionMode)random(3);
+
+  // For time display, NO mirroring (keep digits readable)
+  currentMirrorMode = MIRROR_NONE;
 
   // For time display, use single wave (no multi-stage)
   currentStageMode = STAGE_SINGLE;
