@@ -4,10 +4,11 @@
 #include <TFT_eSPI.h>
 #include <ESPNowComm.h>
 #include "animations/unity.h"
+// fluid_time.h included later after DigitPattern definition
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 22
+#define FIRMWARE_VERSION_MINOR 28
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -73,6 +74,7 @@ enum ControlMode {
   MODE_MENU,        // Main menu - select mode
   MODE_ANIMATIONS,  // Animations menu - select animation
   MODE_UNITY,       // Unity animation - all pixels move in unison
+  MODE_FLUID_TIME,  // Fluid Time animation - staggered wave effect
   MODE_DIGITS,      // Display digits 0-9 with animations
   MODE_PROVISION,   // Discovery and provisioning of pixels
   MODE_OTA,         // OTA firmware update for pixels
@@ -239,6 +241,9 @@ uint8_t currentDigitColor = 0;
 
 // Current speed for digits mode (duration in seconds)
 float currentDigitSpeed = 2.0;
+
+// Include fluid_time after DigitPattern definition
+#include "animations/fluid_time.h"
 
 // Auto-cycle mode variables (cycles 00-99 for two-digit display)
 bool autoCycleEnabled = false;
@@ -463,17 +468,29 @@ void drawAnimationsScreen() {
   tft.drawString("Select Animation:", 160, 45);
   tft.setTextDatum(TL_DATUM);
 
-  // Unity animation button (centered)
-  tft.fillRoundRect(85, 70, 150, 80, 8, TFT_DARKGREEN);
+  // Unity animation button (left)
+  tft.fillRoundRect(10, 70, 145, 80, 8, TFT_DARKGREEN);
   tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-  tft.setTextSize(3);
-  tft.setCursor(115, 85);
+  tft.setTextSize(2);
+  tft.setCursor(40, 85);
   tft.println("Unity");
   tft.setTextSize(1);
-  tft.setCursor(95, 115);
+  tft.setCursor(20, 110);
   tft.println("Synchronized");
-  tft.setCursor(95, 127);
-  tft.println("random patterns");
+  tft.setCursor(25, 125);
+  tft.println("All together");
+
+  // Fluid Time animation button (right)
+  tft.fillRoundRect(165, 70, 145, 80, 8, TFT_PURPLE);
+  tft.setTextColor(TFT_WHITE, TFT_PURPLE);
+  tft.setTextSize(2);
+  tft.setCursor(175, 85);
+  tft.println("Fluid Time");
+  tft.setTextSize(1);
+  tft.setCursor(175, 110);
+  tft.println("Staggered wave");
+  tft.setCursor(185, 125);
+  tft.println("Left to right");
 
   // Back button
   tft.fillRoundRect(110, 180, 100, 40, 8, TFT_RED);
@@ -485,11 +502,18 @@ void drawAnimationsScreen() {
 
 // Handle touch on animations screen
 void handleAnimationsTouch(uint16_t x, uint16_t y) {
-  // Unity button (85, 70, 150, 80)
-  if (x >= 85 && x <= 235 && y >= 70 && y <= 150) {
+  // Unity button (10, 70, 145, 80)
+  if (x >= 10 && x <= 155 && y >= 70 && y <= 150) {
     currentMode = MODE_UNITY;
     sendUnityPattern();  // Send first pattern immediately
     lastCommandTime = millis();
+    return;
+  }
+
+  // Fluid Time button (165, 70, 145, 80)
+  if (x >= 165 && x <= 310 && y >= 70 && y <= 150) {
+    currentMode = MODE_FLUID_TIME;
+    // Fluid Time will start automatically in the loop
     return;
   }
 
@@ -2128,7 +2152,7 @@ void loop() {
       handleVersionTouch(tx, ty);
     } else {
       // Any touch in other modes returns to animations menu (for animation modes)
-      if (currentMode == MODE_UNITY) {
+      if (currentMode == MODE_UNITY || currentMode == MODE_FLUID_TIME) {
         currentMode = MODE_ANIMATIONS;
         drawAnimationsScreen();
         Serial.println("Returned to animations menu");
@@ -2154,6 +2178,12 @@ void loop() {
     case MODE_UNITY: {
       // Handle Unity animation loop
       handleUnityLoop(currentTime);
+      break;
+    }
+
+    case MODE_FLUID_TIME: {
+      // Handle Fluid Time animation loop
+      handleFluidTimeLoop(currentTime);
       break;
     }
 
