@@ -9,7 +9,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 34
+#define FIRMWARE_VERSION_MINOR 35
 
 // ===== WIFI & TIME CONFIGURATION =====
 const char* WIFI_SSID = "Frontier5664";
@@ -84,6 +84,7 @@ enum ControlMode {
   MODE_ANIMATIONS,  // Animations menu - select animation
   MODE_UNITY,       // Unity animation - all pixels move in unison
   MODE_FLUID_TIME,  // Fluid Time animation - staggered wave effect
+  MODE_ORBIT_TIME,  // Orbit Time animation - continuous orbital rotation
   MODE_DIGITS,      // Display digits 0-9 with animations
   MODE_PROVISION,   // Discovery and provisioning of pixels
   MODE_OTA,         // OTA firmware update for pixels
@@ -252,8 +253,9 @@ uint8_t currentDigitColor = 0;
 // Current speed for digits mode (duration in seconds)
 float currentDigitSpeed = 2.0;
 
-// Include fluid_time after DigitPattern definition
+// Include animation headers after DigitPattern definition
 #include "animations/fluid_time.h"
+#include "animations/orbit_time.h"
 
 // Auto-cycle mode variables (cycles 00-99 for two-digit display)
 bool autoCycleEnabled = false;
@@ -509,11 +511,21 @@ void drawAnimationsScreen() {
   tft.setCursor(185, 125);
   tft.println("Left to right");
 
-  // Back button
-  tft.fillRoundRect(110, 180, 100, 40, 8, TFT_RED);
+  // Orbit Time animation button (bottom center)
+  tft.fillRoundRect(85, 160, 150, 50, 8, TFT_ORANGE);
+  tft.setTextColor(TFT_WHITE, TFT_ORANGE);
+  tft.setTextSize(2);
+  tft.setCursor(95, 170);
+  tft.println("Orbit Time");
+  tft.setTextSize(1);
+  tft.setCursor(90, 190);
+  tft.println("Continuous orbit");
+
+  // Back button (bottom right)
+  tft.fillRoundRect(245, 160, 65, 50, 8, TFT_RED);
   tft.setTextColor(TFT_WHITE, TFT_RED);
   tft.setTextSize(2);
-  tft.setCursor(135, 192);
+  tft.setCursor(253, 178);
   tft.print("Back");
 }
 
@@ -534,8 +546,15 @@ void handleAnimationsTouch(uint16_t x, uint16_t y) {
     return;
   }
 
-  // Back button (110, 180, 100, 40)
-  if (x >= 110 && x <= 210 && y >= 180 && y <= 220) {
+  // Orbit Time button (85, 160, 150, 50)
+  if (x >= 85 && x <= 235 && y >= 160 && y <= 210) {
+    currentMode = MODE_ORBIT_TIME;
+    // Orbit Time will start automatically in the loop
+    return;
+  }
+
+  // Back button (245, 160, 65, 50)
+  if (x >= 245 && x <= 310 && y >= 160 && y <= 210) {
     currentMode = MODE_MENU;
     drawMenu();
     return;
@@ -2272,6 +2291,9 @@ void loop() {
     } else if (currentMode == MODE_VERSION) {
       // Version mode has its own touch handler
       handleVersionTouch(tx, ty);
+    } else if (currentMode == MODE_ORBIT_TIME) {
+      // Orbit Time mode has its own touch handler
+      handleOrbitTimeTouch(tx, ty);
     } else {
       // Any touch in other modes returns to animations menu (for animation modes)
       if (currentMode == MODE_UNITY || currentMode == MODE_FLUID_TIME) {
@@ -2315,6 +2337,12 @@ void loop() {
     case MODE_FLUID_TIME: {
       // Handle Fluid Time animation loop
       handleFluidTimeLoop(currentTime);
+      break;
+    }
+
+    case MODE_ORBIT_TIME: {
+      // Handle Orbit Time animation loop
+      handleOrbitTimeLoop(currentTime);
       break;
     }
 
