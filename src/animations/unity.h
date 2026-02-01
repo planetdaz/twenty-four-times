@@ -39,7 +39,7 @@ void sendUnityPattern() {
   RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
 
   uint8_t colorIndex = getRandomColorIndex();
-  uint8_t opacity = getRandomOpacity();
+  uint8_t opacity = 255;  // Always full opacity
 
   // Apply same values to all pixels for synchronized movement
   for (int i = 0; i < MAX_PIXELS; i++) {
