@@ -3,10 +3,11 @@
 #include <Wire.h>
 #include <TFT_eSPI.h>
 #include <ESPNowComm.h>
+#include "animations/unity.h"
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 21
+#define FIRMWARE_VERSION_MINOR 22
 
 // ===== MASTER CONTROLLER FOR CYD =====
 // This firmware runs on a CYD (Cheap Yellow Display) board
@@ -70,7 +71,8 @@ TFT_eSPI tft = TFT_eSPI();
 // ===== CONTROL MODES =====
 enum ControlMode {
   MODE_MENU,        // Main menu - select mode
-  MODE_SIMULATION,  // Random patterns like the simulation
+  MODE_ANIMATIONS,  // Animations menu - select animation
+  MODE_UNITY,       // Unity animation - all pixels move in unison
   MODE_DIGITS,      // Display digits 0-9 with animations
   MODE_PROVISION,   // Discovery and provisioning of pixels
   MODE_OTA,         // OTA firmware update for pixels
@@ -100,7 +102,6 @@ const unsigned long DISCOVERY_WINDOW = 5000;    // Wait 5 seconds for responses
 unsigned long lastCommandTime = 0;
 unsigned long lastPingTime = 0;
 unsigned long modeStartTime = 0;
-const unsigned long SIMULATION_INTERVAL = 5000;  // 5 seconds between random patterns
 const unsigned long IDENTIFY_DURATION = 5000;    // Identify phase duration
 const unsigned long PING_INTERVAL = 5000;        // 5 seconds between pings
 
@@ -254,6 +255,10 @@ uint8_t lastSentRight = 11;             // Last sent right digit (11 = space)
 // ===== FUNCTION DECLARATIONS =====
 void sendPing();
 void sendReset();
+// Animation functions
+void drawAnimationsScreen();
+void handleAnimationsTouch(uint16_t x, uint16_t y);
+// Digits functions
 void drawDigitsScreen();
 void handleDigitsTouch(uint16_t x, uint16_t y);
 void sendTwoDigitPattern(uint8_t leftDigit, uint8_t rightDigit);
@@ -362,15 +367,15 @@ void drawMenu() {
   // Menu buttons (4 buttons in 2x2 grid)
   // Button layout: 160x100 each, 10px padding
 
-  // Button 1: Simulation Mode (top left)
+  // Button 1: Animations (top left)
   tft.fillRoundRect(10, 90, 150, 60, 8, TFT_DARKGREEN);
   tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
   tft.setTextSize(2);
-  tft.setCursor(25, 105);
-  tft.println("Simulation");
+  tft.setCursor(20, 105);
+  tft.println("Animations");
   tft.setTextSize(1);
-  tft.setCursor(30, 125);
-  tft.println("Random patterns");
+  tft.setCursor(25, 125);
+  tft.println("Visual patterns");
 
   // Button 2: Digits (top right)
   tft.fillRoundRect(170, 90, 140, 60, 8, TFT_DARKBLUE);
@@ -419,9 +424,9 @@ ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
   if (x >= 270 && x <= 315 && y >= 5 && y <= 30) {
     return MODE_VERSION;
   }
-  // Button 1: Simulation (10, 90, 150, 60)
+  // Button 1: Animations (10, 90, 150, 60)
   if (x >= 10 && x <= 160 && y >= 90 && y <= 150) {
-    return MODE_SIMULATION;
+    return MODE_ANIMATIONS;
   }
   // Button 2: Digits (170, 90, 140, 60)
   if (x >= 170 && x <= 310 && y >= 90 && y <= 150) {
@@ -439,70 +444,60 @@ ControlMode checkMenuTouch(uint16_t x, uint16_t y) {
   return MODE_MENU;  // No button pressed
 }
 
-// Send a random pattern (simulation mode)
-void sendRandomPattern() {
-  ESPNowPacket packet;
-  packet.angleCmd.command = CMD_SET_ANGLES;
-  packet.angleCmd.clearTargetMask();  // Target all pixels (broadcast mode)
-  packet.angleCmd.transition = getRandomTransition();
-  packet.angleCmd.duration = floatToDuration(getRandomDuration());
+// ===== ANIMATIONS MENU =====
 
-  // Generate random values ONCE for all pixels (synchronized movement)
-  float angle1 = getRandomAngle();
-  float angle2 = getRandomAngle();
-  float angle3 = getRandomAngle();
+// Draw animations selection menu
+void drawAnimationsScreen() {
+  tft.fillScreen(COLOR_BG);
 
-  // Random directions for choreographic control (all pixels move in unison)
-  RotationDirection dir1 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-  RotationDirection dir2 = (random(2) == 0) ? DIR_CW : DIR_CCW;
-  RotationDirection dir3 = (random(2) == 0) ? DIR_CW : DIR_CCW;
+  // Title - centered for landscape mode (320x240)
+  tft.setTextColor(COLOR_ACCENT, COLOR_BG);
+  tft.setTextSize(3);
+  tft.setTextDatum(TC_DATUM);  // Top center alignment
+  tft.drawString("Animations", 160, 10);
+  tft.setTextDatum(TL_DATUM);  // Reset to top-left for buttons
 
-  uint8_t colorIndex = getRandomColorIndex();
-  uint8_t opacity = getRandomOpacity();
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_DARKGREY, COLOR_BG);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("Select Animation:", 160, 45);
+  tft.setTextDatum(TL_DATUM);
 
-  // Apply same values to all pixels for synchronized movement
-  for (int i = 0; i < MAX_PIXELS; i++) {
-    packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3, dir1, dir2, dir3);
-    packet.angleCmd.setPixelStyle(i, colorIndex, opacity);
+  // Unity animation button (centered)
+  tft.fillRoundRect(85, 70, 150, 80, 8, TFT_DARKGREEN);
+  tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+  tft.setTextSize(3);
+  tft.setCursor(115, 85);
+  tft.println("Unity");
+  tft.setTextSize(1);
+  tft.setCursor(95, 115);
+  tft.println("Synchronized");
+  tft.setCursor(95, 127);
+  tft.println("random patterns");
+
+  // Back button
+  tft.fillRoundRect(110, 180, 100, 40, 8, TFT_RED);
+  tft.setTextColor(TFT_WHITE, TFT_RED);
+  tft.setTextSize(2);
+  tft.setCursor(135, 192);
+  tft.print("Back");
+}
+
+// Handle touch on animations screen
+void handleAnimationsTouch(uint16_t x, uint16_t y) {
+  // Unity button (85, 70, 150, 80)
+  if (x >= 85 && x <= 235 && y >= 70 && y <= 150) {
+    currentMode = MODE_UNITY;
+    sendUnityPattern();  // Send first pattern immediately
+    lastCommandTime = millis();
+    return;
   }
 
-  // Send the packet
-  if (ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket))) {
-    Serial.print("Sent random pattern: ");
-    Serial.print(getTransitionName(packet.angleCmd.transition));
-    Serial.print(", duration: ");
-    Serial.print(durationToFloat(packet.angleCmd.duration), 1);
-    Serial.println("s");
-
-    // Update display
-    tft.fillScreen(COLOR_BG);
-    tft.setTextColor(COLOR_ACCENT, COLOR_BG);
-    tft.setTextSize(2);
-    tft.setCursor(10, 10);
-    tft.println("SIMULATION MODE");
-
-    tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setTextSize(1);
-    tft.setCursor(10, 40);
-    tft.print("Transition: ");
-    tft.println(getTransitionName(packet.angleCmd.transition));
-
-    tft.setCursor(10, 55);
-    tft.print("Duration: ");
-    tft.print(durationToFloat(packet.angleCmd.duration), 1);
-    tft.println(" sec");
-
-    tft.setCursor(10, 75);
-    tft.setTextColor(COLOR_ACCENT, COLOR_BG);
-    tft.println("All pixels move in unison");
-    tft.println("Random angles & directions");
-
-    tft.setCursor(10, 110);
-    tft.setTextColor(TFT_YELLOW, COLOR_BG);
-    tft.println("Touch screen to return to menu");
-
-  } else {
-    Serial.println("Failed to send random pattern!");
+  // Back button (110, 180, 100, 40)
+  if (x >= 110 && x <= 210 && y >= 180 && y <= 220) {
+    currentMode = MODE_MENU;
+    drawMenu();
+    return;
   }
 }
 
@@ -2081,8 +2076,8 @@ void loop() {
 
         // Initialize the new mode
         switch (currentMode) {
-          case MODE_SIMULATION:
-            sendRandomPattern();
+          case MODE_ANIMATIONS:
+            drawAnimationsScreen();
             break;
           case MODE_DIGITS:
             drawDigitsScreen();
@@ -2116,6 +2111,9 @@ void loop() {
             break;
         }
       }
+    } else if (currentMode == MODE_ANIMATIONS) {
+      // Animations menu has its own touch handler
+      handleAnimationsTouch(tx, ty);
     } else if (currentMode == MODE_DIGITS) {
       // Digits mode has its own touch handler
       handleDigitsTouch(tx, ty);
@@ -2129,10 +2127,17 @@ void loop() {
       // Version mode has its own touch handler
       handleVersionTouch(tx, ty);
     } else {
-      // Any touch in other modes returns to menu
-      currentMode = MODE_MENU;
-      drawMenu();
-      Serial.println("Returned to menu");
+      // Any touch in other modes returns to animations menu (for animation modes)
+      if (currentMode == MODE_UNITY) {
+        currentMode = MODE_ANIMATIONS;
+        drawAnimationsScreen();
+        Serial.println("Returned to animations menu");
+      } else {
+        // Return to main menu
+        currentMode = MODE_MENU;
+        drawMenu();
+        Serial.println("Returned to menu");
+      }
     }
   }
 
@@ -2142,12 +2147,13 @@ void loop() {
       // Nothing to do - waiting for touch
       break;
 
-    case MODE_SIMULATION: {
-      // Send random patterns every SIMULATION_INTERVAL, starting after previous animation completes
-      if (currentTime - lastCommandTime >= SIMULATION_INTERVAL) {
-        sendRandomPattern();
-        lastCommandTime = currentTime;
-      }
+    case MODE_ANIMATIONS:
+      // Nothing to do - waiting for touch
+      break;
+
+    case MODE_UNITY: {
+      // Handle Unity animation loop
+      handleUnityLoop(currentTime);
       break;
     }
 
