@@ -86,6 +86,7 @@ enum ControlMode {
   MODE_FLUID_TIME,  // Fluid Time animation - staggered wave effect
   MODE_ORBIT_TIME,  // Orbit Time animation - continuous orbital rotation
   MODE_METRONOME_TIME, // Metronome Time animation - polyrhythmic ticking
+  MODE_SCATTER_FLOCK, // Scatter Flock animation - chaos to order swarming
   MODE_DIGITS,      // Display digits 0-9 with animations
   MODE_PROVISION,   // Discovery and provisioning of pixels
   MODE_OTA,         // OTA firmware update for pixels
@@ -259,6 +260,7 @@ float currentDigitSpeed = 2.0;
 #include "animations/fluid_time.h"
 #include "animations/orbit_time.h"
 #include "animations/metronome_time.h"
+#include "animations/scatter_flock.h"
 
 // Auto-cycle mode variables (cycles 00-99 for two-digit display)
 bool autoCycleEnabled = false;
@@ -512,28 +514,38 @@ void drawAnimationsScreen() {
   tft.setCursor(175, 105);
   tft.println("Staggered wave");
 
-  // Orbit Time animation button (bottom left)
-  tft.fillRoundRect(10, 140, 145, 60, 8, TFT_ORANGE);
+  // Orbit Time animation button (middle left)
+  tft.fillRoundRect(10, 140, 145, 50, 8, TFT_ORANGE);
   tft.setTextColor(TFT_WHITE, TFT_ORANGE);
   tft.setTextSize(2);
-  tft.setCursor(25, 150);
+  tft.setCursor(25, 147);
   tft.println("Orbit Time");
   tft.setTextSize(1);
-  tft.setCursor(20, 175);
+  tft.setCursor(20, 170);
   tft.println("Continuous orbit");
 
-  // Metronome Time animation button (bottom right)
-  tft.fillRoundRect(165, 140, 145, 60, 8, TFT_CYAN);
+  // Metronome Time animation button (middle right)
+  tft.fillRoundRect(165, 140, 145, 50, 8, TFT_CYAN);
   tft.setTextColor(TFT_BLACK, TFT_CYAN);
   tft.setTextSize(2);
-  tft.setCursor(170, 150);
+  tft.setCursor(170, 147);
   tft.println("Metronome");
   tft.setTextSize(1);
-  tft.setCursor(165, 175);
+  tft.setCursor(165, 170);
   tft.println("Polyrhythmic tick");
 
-  // Back button (bottom center)
-  tft.fillRoundRect(130, 210, 60, 25, 4, TFT_RED);
+  // Scatter Flock animation button (bottom center)
+  tft.fillRoundRect(60, 200, 200, 35, 8, TFT_MAGENTA);
+  tft.setTextColor(TFT_WHITE, TFT_MAGENTA);
+  tft.setTextSize(2);
+  tft.setCursor(70, 205);
+  tft.println("Scatter Flock");
+  tft.setTextSize(1);
+  tft.setCursor(80, 222);
+  tft.println("Chaos to order");
+
+  // Back button (bottom right corner, smaller)
+  tft.fillRoundRect(270, 210, 45, 25, 4, TFT_RED);
   tft.setTextColor(TFT_WHITE, TFT_RED);
   tft.setTextSize(1);
   tft.setCursor(145, 217);
@@ -557,15 +569,15 @@ void handleAnimationsTouch(uint16_t x, uint16_t y) {
     return;
   }
 
-  // Orbit Time button (10, 140, 145, 60) - bottom left
-  if (x >= 10 && x <= 155 && y >= 140 && y <= 200) {
+  // Orbit Time button (10, 140, 145, 50) - middle left
+  if (x >= 10 && x <= 155 && y >= 140 && y <= 190) {
     currentMode = MODE_ORBIT_TIME;
     // Orbit Time will start automatically in the loop
     return;
   }
 
-  // Metronome Time button (165, 140, 145, 60) - bottom right
-  if (x >= 165 && x <= 310 && y >= 140 && y <= 200) {
+  // Metronome Time button (165, 140, 145, 50) - middle right
+  if (x >= 165 && x <= 310 && y >= 140 && y <= 190) {
     currentMode = MODE_METRONOME_TIME;
     // Initialize metronome animation
     generateMetronomePattern();
@@ -573,8 +585,16 @@ void handleAnimationsTouch(uint16_t x, uint16_t y) {
     return;
   }
 
-  // Back button (130, 210, 60, 25) - bottom center
-  if (x >= 130 && x <= 190 && y >= 210 && y <= 235) {
+  // Scatter Flock button (60, 200, 200, 35) - bottom center
+  if (x >= 60 && x <= 260 && y >= 200 && y <= 235) {
+    currentMode = MODE_SCATTER_FLOCK;
+    // Initialize scatter flock animation
+    initScatterFlock();
+    return;
+  }
+
+  // Back button (270, 210, 45, 25) - bottom right corner
+  if (x >= 270 && x <= 315 && y >= 210 && y <= 235) {
     currentMode = MODE_MENU;
     drawMenu();
     return;
@@ -2249,7 +2269,7 @@ void loop() {
       handleOrbitTimeTouch(tx, ty);
     } else {
       // Any touch in other modes returns to animations menu (for animation modes)
-      if (currentMode == MODE_UNITY || currentMode == MODE_FLUID_TIME || currentMode == MODE_METRONOME_TIME) {
+      if (currentMode == MODE_UNITY || currentMode == MODE_FLUID_TIME || currentMode == MODE_METRONOME_TIME || currentMode == MODE_SCATTER_FLOCK) {
         currentMode = MODE_ANIMATIONS;
         drawAnimationsScreen();
         Serial.println("Returned to animations menu");
@@ -2302,6 +2322,12 @@ void loop() {
     case MODE_METRONOME_TIME: {
       // Handle Metronome Time animation loop
       handleMetronomeLoop(currentTime);
+      break;
+    }
+
+    case MODE_SCATTER_FLOCK: {
+      // Handle Scatter Flock animation loop
+      handleScatterFlockLoop(currentTime);
       break;
     }
 
