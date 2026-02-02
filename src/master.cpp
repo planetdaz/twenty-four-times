@@ -548,8 +548,9 @@ void drawAnimationsScreen() {
   tft.fillRoundRect(270, 210, 45, 25, 4, TFT_RED);
   tft.setTextColor(TFT_WHITE, TFT_RED);
   tft.setTextSize(1);
-  tft.setCursor(145, 217);
-  tft.print("Back");
+  tft.setTextDatum(MC_DATUM);  // Middle center alignment
+  tft.drawString("Back", 292, 222);  // Center of button
+  tft.setTextDatum(TL_DATUM);  // Reset to top-left
 }
 
 // Handle touch on animations screen

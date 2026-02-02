@@ -30,12 +30,20 @@ String getCurrentTimeString();  // Get formatted time string
 
 // Swarm pattern types
 enum SwarmPattern {
-  SWARM_UNIFIED,      // All hands point same direction
-  SWARM_RADIAL_OUT,   // Hands point outward from center
-  SWARM_RADIAL_IN,    // Hands point inward to center
-  SWARM_WAVE,         // Hands form wave pattern across grid
-  SWARM_SPIRAL,       // Hands form spiral pattern
-  SWARM_VORTEX        // Hands rotate around center point
+  SWARM_UNIFIED,          // All hands point same direction
+  SWARM_WAVE,             // Hands form wave pattern across grid
+  SWARM_SPIRAL,           // Hands form spiral pattern
+  SWARM_RADIAL,           // Mercedes logo - 3 hands evenly spaced
+  SWARM_TWO_HAND_SWIRL,   // 2 hands 180° apart, swirl across pixels
+  SWARM_TWO_HAND_RANDOM   // 2 hands random degrees apart, pattern across pixels
+};
+
+// Twitch pattern types (chaos behavior)
+enum TwitchPattern {
+  TWITCH_THREE_RANDOM,      // 3 hands, random positions
+  TWITCH_TWO_180,           // 2 hands 180° apart, snap to 0/45/90/135
+  TWITCH_TWO_RANDOM_SNAP,   // 2 hands random degrees apart, snap to 0/45/90/135
+  TWITCH_ONE_HAND           // 1 hand (all 3 same angle), snap to 0/45/90/135
 };
 
 // ===== STATE TRACKING =====
@@ -65,9 +73,14 @@ const float SCATTER_DURATION = 1.5f;                // 1.5 seconds to scatter
 
 // Current state
 SwarmPattern currentSwarmPattern;
+TwitchPattern currentTwitchPattern;
 unsigned long chaoticDuration;  // Randomized each cycle
 uint8_t scatterCurrentMinute = 0;
 bool scatterShouldShowTimeNext = true;  // Start with time display
+float twoHandSeparation = 0;  // For TWO_HAND_RANDOM patterns
+unsigned long lastRotationTime = 0;  // For rotating gears
+float currentRotation = 0;  // Current rotation angle for gears
+const unsigned long ROTATION_INTERVAL = 50;  // Update rotation every 50ms
 
 // ===== HELPER FUNCTIONS =====
 
@@ -76,17 +89,28 @@ SwarmPattern getRandomSwarmPattern() {
   return (SwarmPattern)random(6);  // 0-5
 }
 
+// Get random twitch pattern
+TwitchPattern getRandomTwitchPattern() {
+  return (TwitchPattern)random(4);  // 0-3
+}
+
 // Get swarm pattern name for display
 const char* getSwarmPatternName(SwarmPattern pattern) {
   switch (pattern) {
     case SWARM_UNIFIED: return "Unified";
-    case SWARM_RADIAL_OUT: return "Radial Out";
-    case SWARM_RADIAL_IN: return "Radial In";
     case SWARM_WAVE: return "Wave";
     case SWARM_SPIRAL: return "Spiral";
-    case SWARM_VORTEX: return "Vortex";
+    case SWARM_RADIAL: return "Radial Gears";
+    case SWARM_TWO_HAND_SWIRL: return "2-Hand Swirl";
+    case SWARM_TWO_HAND_RANDOM: return "2-Hand Random";
     default: return "Unknown";
   }
+}
+
+// Snap angle to nearest 45-degree increment
+float snapTo45(float angle) {
+  int increment = round(angle / 45.0f);
+  return increment * 45.0f;
 }
 
 // Calculate angle for swarm pattern based on pixel position
@@ -107,24 +131,10 @@ void getSwarmAngles(uint8_t pixelId, SwarmPattern pattern, float& angle1, float&
 
   switch (pattern) {
     case SWARM_UNIFIED:
-      // All hands point same random direction
+      // All hands point same direction
       angle1 = 45.0f;
       angle2 = 135.0f;
       angle3 = 225.0f;
-      break;
-
-    case SWARM_RADIAL_OUT:
-      // Hands point outward from center
-      angle1 = angleToCenter;
-      angle2 = angleToCenter + 120.0f;
-      angle3 = angleToCenter + 240.0f;
-      break;
-
-    case SWARM_RADIAL_IN:
-      // Hands point inward to center
-      angle1 = angleToCenter + 180.0f;
-      angle2 = angleToCenter + 300.0f;
-      angle3 = angleToCenter + 60.0f;
       break;
 
     case SWARM_WAVE:
@@ -141,11 +151,28 @@ void getSwarmAngles(uint8_t pixelId, SwarmPattern pattern, float& angle1, float&
       angle3 = distFromCenter * 60.0f + angleToCenter + 240.0f;
       break;
 
-    case SWARM_VORTEX:
-      // Rotating vortex
-      angle1 = angleToCenter + distFromCenter * 30.0f;
-      angle2 = angleToCenter + distFromCenter * 30.0f + 90.0f;
-      angle3 = angleToCenter + distFromCenter * 30.0f + 180.0f;
+    case SWARM_RADIAL:
+      // Mercedes logo - 3 hands evenly spaced (120° apart)
+      // Add current rotation for animated gears effect
+      angle1 = angleToCenter + currentRotation;
+      angle2 = angleToCenter + currentRotation + 120.0f;
+      angle3 = angleToCenter + currentRotation + 240.0f;
+      break;
+
+    case SWARM_TWO_HAND_SWIRL:
+      // 2 hands 180° apart, swirl pattern across pixels
+      // Third hand hidden (same as first)
+      angle1 = (col * 45.0f) + (row * 30.0f);  // Swirl offset
+      angle2 = angle1 + 180.0f;
+      angle3 = angle1;  // Hide third hand
+      break;
+
+    case SWARM_TWO_HAND_RANDOM:
+      // 2 hands with random separation, pattern across pixels
+      // Third hand hidden (same as first)
+      angle1 = (col * 40.0f) + (row * 25.0f);  // Pattern offset
+      angle2 = angle1 + twoHandSeparation;
+      angle3 = angle1;  // Hide third hand
       break;
   }
 
@@ -198,16 +225,58 @@ void sendTwitchPattern() {
 
   uint8_t colorIndex = getRandomColorIndex();
 
-  // Each pixel twitches to nearby random angle
-  for (int i = 0; i < MAX_PIXELS; i++) {
-    float angle1 = getRandomAngle();
-    float angle2 = getRandomAngle();
-    float angle3 = getRandomAngle();
+  // Different twitch behaviors based on current pattern
+  switch (currentTwitchPattern) {
+    case TWITCH_THREE_RANDOM: {
+      // Original: 3 hands, random positions
+      for (int i = 0; i < MAX_PIXELS; i++) {
+        float angle1 = getRandomAngle();
+        float angle2 = getRandomAngle();
+        float angle3 = getRandomAngle();
+        RotationDirection dir = DIR_SHORTEST;
+        packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3, dir, dir, dir);
+        packet.angleCmd.setPixelStyle(i, colorIndex, 255);
+      }
+      break;
+    }
 
-    RotationDirection dir = DIR_SHORTEST;  // Quick movements
+    case TWITCH_TWO_180: {
+      // 2 hands 180° apart, snap to 0/45/90/135
+      for (int i = 0; i < MAX_PIXELS; i++) {
+        float angle1 = snapTo45(getRandomAngle());
+        float angle2 = angle1 + 180.0f;
+        float angle3 = angle1;  // Hide third hand
+        RotationDirection dir = DIR_SHORTEST;
+        packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3, dir, dir, dir);
+        packet.angleCmd.setPixelStyle(i, colorIndex, 255);
+      }
+      break;
+    }
 
-    packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3, dir, dir, dir);
-    packet.angleCmd.setPixelStyle(i, colorIndex, 255);
+    case TWITCH_TWO_RANDOM_SNAP: {
+      // 2 hands random degrees apart, snap to 0/45/90/135
+      float separation = random(4, 10) * 45.0f;  // 180-450 degrees
+      for (int i = 0; i < MAX_PIXELS; i++) {
+        float angle1 = snapTo45(getRandomAngle());
+        float angle2 = angle1 + separation;
+        float angle3 = angle1;  // Hide third hand
+        RotationDirection dir = DIR_SHORTEST;
+        packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3, dir, dir, dir);
+        packet.angleCmd.setPixelStyle(i, colorIndex, 255);
+      }
+      break;
+    }
+
+    case TWITCH_ONE_HAND: {
+      // 1 hand (all 3 same angle), snap to 0/45/90/135
+      for (int i = 0; i < MAX_PIXELS; i++) {
+        float angle = snapTo45(getRandomAngle());
+        RotationDirection dir = DIR_SHORTEST;
+        packet.angleCmd.setPixelAngles(i, angle, angle, angle, dir, dir, dir);
+        packet.angleCmd.setPixelStyle(i, colorIndex, 255);
+      }
+      break;
+    }
   }
 
   ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket));
@@ -216,6 +285,15 @@ void sendTwitchPattern() {
 
 // Send converge/swarm command
 void sendConvergePattern(SwarmPattern pattern) {
+  // Initialize pattern-specific parameters
+  if (pattern == SWARM_TWO_HAND_RANDOM) {
+    twoHandSeparation = random(90, 270);  // Random separation between hands
+  }
+  if (pattern == SWARM_RADIAL) {
+    currentRotation = 0;  // Reset rotation
+    lastRotationTime = millis();
+  }
+
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
   packet.angleCmd.clearTargetMask();
@@ -240,6 +318,33 @@ void sendConvergePattern(SwarmPattern pattern) {
 
   Serial.print("Swarm: Converging to ");
   Serial.println(getSwarmPatternName(pattern));
+}
+
+// Update rotating gears (for RADIAL pattern during UNIFIED phase)
+void updateRotatingGears() {
+  currentRotation += 2.0f;  // Rotate 2 degrees
+  if (currentRotation >= 360.0f) currentRotation -= 360.0f;
+
+  ESPNowPacket packet;
+  packet.angleCmd.command = CMD_SET_ANGLES;
+  packet.angleCmd.clearTargetMask();
+  packet.angleCmd.transition = TRANSITION_LINEAR;
+  packet.angleCmd.duration = floatToDuration(0.1f);  // Smooth rotation
+
+  uint8_t colorIndex = 2;  // Keep same color during rotation
+
+  for (int i = 0; i < MAX_PIXELS; i++) {
+    float angle1, angle2, angle3;
+    getSwarmAngles(i, SWARM_RADIAL, angle1, angle2, angle3);
+
+    RotationDirection dir = DIR_CW;  // All rotate clockwise
+
+    packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3, dir, dir, dir);
+    packet.angleCmd.setPixelStyle(i, colorIndex, 255);
+  }
+
+  ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket));
+  lastCommandTime = millis();
 }
 
 // Send time digit pattern using digit_display library
@@ -332,8 +437,10 @@ void updateScatterFlockDisplay() {
   // Back button
   tft.fillRoundRect(10, 210, 60, 25, 4, TFT_DARKGREY);
   tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
-  tft.setCursor(20, 217);
-  tft.println("Back");
+  tft.setTextSize(1);
+  tft.setTextDatum(MC_DATUM);  // Middle center alignment
+  tft.drawString("Back", 40, 222);  // Center of button (10+30, 210+12)
+  tft.setTextDatum(TL_DATUM);  // Reset to top-left
 }
 
 // Main loop handler
@@ -390,6 +497,14 @@ void handleScatterFlockLoop(unsigned long currentTime) {
     }
 
     case SCATTER_UNIFIED: {
+      // If radial pattern, continuously rotate the gears
+      if (currentSwarmPattern == SWARM_RADIAL) {
+        if (currentTime - lastRotationTime >= ROTATION_INTERVAL) {
+          updateRotatingGears();
+          lastRotationTime = currentTime;
+        }
+      }
+
       // Hold unified pattern briefly
       if (currentTime - phaseStartTime >= UNIFIED_DURATION) {
         // Scatter back to chaos
@@ -398,6 +513,7 @@ void handleScatterFlockLoop(unsigned long currentTime) {
         phaseStartTime = currentTime;
         lastTwitchTime = currentTime;
         chaoticDuration = random(CHAOTIC_DURATION_MIN, CHAOTIC_DURATION_MAX);
+        currentTwitchPattern = getRandomTwitchPattern();  // Pick new twitch pattern
         updateScatterFlockDisplay();
       }
       break;
@@ -421,6 +537,7 @@ void handleScatterFlockLoop(unsigned long currentTime) {
         phaseStartTime = currentTime;
         lastTwitchTime = currentTime;
         chaoticDuration = random(CHAOTIC_DURATION_MIN, CHAOTIC_DURATION_MAX);
+        currentTwitchPattern = getRandomTwitchPattern();  // Pick new twitch pattern
         updateScatterFlockDisplay();
       }
       break;
@@ -436,6 +553,7 @@ void initScatterFlock() {
   lastTimeDisplayTrigger = millis();
   chaoticDuration = random(CHAOTIC_DURATION_MIN, CHAOTIC_DURATION_MAX);
   scatterShouldShowTimeNext = true;  // Start with time display
+  currentTwitchPattern = getRandomTwitchPattern();  // Pick initial twitch pattern
 
   // Start with initial scatter
   sendScatterPattern();
