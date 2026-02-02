@@ -9,7 +9,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 39
+#define FIRMWARE_VERSION_MINOR 40
 
 // ===== WIFI & TIME CONFIGURATION =====
 const char* WIFI_SSID = "Frontier5664";

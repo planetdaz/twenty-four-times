@@ -33,7 +33,8 @@ enum CommandType : uint8_t {
   CMD_GET_VERSION = 0x09,     // Request pixels to display their version
   CMD_VERSION_RESPONSE = 0x0A,// Pixel responds with version info
   CMD_OTA_START = 0x0B,       // Tell specific pixel to start OTA download (sequential orchestration)
-  CMD_DISCOVERY_RESPONSE = 0x0C // Pixel responds to discovery request (CRITICAL: separate from CMD_DISCOVERY to prevent infinite loop!)
+  CMD_DISCOVERY_RESPONSE = 0x0C, // Pixel responds to discovery request (CRITICAL: separate from CMD_DISCOVERY to prevent infinite loop!)
+  CMD_SET_ROTATION = 0x0D     // Enable/disable autonomous rotation mode on pixels
 };
 
 // Transition/easing types (matches pixel's EasingType enum)
@@ -314,6 +315,52 @@ struct __attribute__((packed)) VersionResponsePacket {
   uint8_t versionMinor;          // Minor version (e.g., 2 in "1.2")
 };
 
+// ===== ROTATION MODE PACKET =====
+
+// Rotation mode packet - enables autonomous rotation on pixels
+struct __attribute__((packed)) RotationCommandPacket {
+  CommandType command;           // CMD_SET_ROTATION
+  bool enabled;                  // Enable (true) or disable (false) rotation
+  int8_t direction;              // Rotation direction: +1 (CW), -1 (CCW), 0 (none)
+  uint8_t speed;                 // Rotation speed (0-255): degrees per 50ms update (scaled by 0.1)
+                                 // e.g., 10 = 1.0 degrees per 50ms = 20 degrees/second
+  bool resetOffset;              // If true, reset rotation offset to 0 before enabling
+  uint8_t targetMask[3];         // Bitmask for which pixels should respond
+  uint8_t colorIndex;            // Color to maintain during rotation (from last SET_ANGLES)
+  uint8_t reserved[11];          // Reserved for future use
+
+  // Helper to clear target mask (all zeros = target all pixels)
+  void clearTargetMask() {
+    targetMask[0] = 0;
+    targetMask[1] = 0;
+    targetMask[2] = 0;
+  }
+
+  // Set a specific pixel as a target
+  void setTargetPixel(uint8_t pixelIndex) {
+    if (pixelIndex < MAX_PIXELS) {
+      uint8_t byteIndex = pixelIndex / 8;
+      uint8_t bitIndex = pixelIndex % 8;
+      targetMask[byteIndex] |= (1 << bitIndex);
+    }
+  }
+
+  // Check if a specific pixel is targeted
+  bool isPixelTargeted(uint8_t pixelIndex) const {
+    // All zeros means broadcast to all pixels
+    if (targetMask[0] == 0 && targetMask[1] == 0 && targetMask[2] == 0) {
+      return true;
+    }
+    // Otherwise check the specific bit
+    if (pixelIndex < MAX_PIXELS) {
+      uint8_t byteIndex = pixelIndex / 8;
+      uint8_t bitIndex = pixelIndex % 8;
+      return (targetMask[byteIndex] & (1 << bitIndex)) != 0;
+    }
+    return false;
+  }
+};
+
 // Generic packet union for easy handling
 union ESPNowPacket {
   CommandType command;
@@ -327,6 +374,7 @@ union ESPNowPacket {
   OTAAckPacket otaAck;
   GetVersionPacket getVersion;
   VersionResponsePacket versionResponse;
+  RotationCommandPacket rotationCmd;
   uint8_t raw[250];  // ESP-NOW max packet size
 };
 

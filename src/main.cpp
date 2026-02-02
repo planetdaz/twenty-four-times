@@ -15,7 +15,7 @@
 
 // ===== FIRMWARE VERSION =====
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 39
+#define FIRMWARE_VERSION_MINOR 40
 
 // ===== PIXEL CONFIGURATION =====
 // Pixel ID is loaded from NVS (non-volatile storage) on startup.
@@ -135,8 +135,19 @@ struct TransitionState {
 
 TransitionState transition = {0, 0.0, TRANSITION_ELASTIC, false};
 
+// ---- Rotation State (for autonomous rotation mode) ----
+struct RotationState {
+  bool enabled;              // Is rotation mode active?
+  int8_t direction;          // +1 (CW), -1 (CCW), 0 (none)
+  float speed;               // Degrees per update (from speed byte * 0.1)
+  float offset;              // Current accumulated rotation offset
+};
+
+RotationState rotation = {false, 0, 0.0f, 0.0f};
+
 // Timing
 unsigned long lastUpdateTime = 0;
+unsigned long lastRotationUpdateTime = 0;
 
 // ===== ESP-NOW STATE =====
 bool espnowEnabled = false;  // Set to true when ESP-NOW is initialized
@@ -757,6 +768,41 @@ void onPacketReceived(const ESPNowPacket* packet, size_t len) {
         Serial.print("ESP-NOW: Version mode activated for pixel ");
         Serial.println(pixelId);
       }
+      break;
+    }
+
+    case CMD_SET_ROTATION: {
+      const RotationCommandPacket& cmd = packet->rotationCmd;
+
+      // Check if this pixel is targeted by this command
+      if (!cmd.isPixelTargeted(pixelId)) {
+        Serial.print("ESP-NOW: Pixel ");
+        Serial.print(pixelId);
+        Serial.println(" not targeted for rotation, ignoring");
+        break;
+      }
+
+      Serial.print("ESP-NOW: Rotation command - enabled=");
+      Serial.print(cmd.enabled);
+      Serial.print(", direction=");
+      Serial.print(cmd.direction);
+      Serial.print(", speed=");
+      Serial.println(cmd.speed);
+
+      // Reset offset if requested
+      if (cmd.resetOffset) {
+        rotation.offset = 0.0f;
+        Serial.println("ESP-NOW: Rotation offset reset to 0");
+      }
+
+      // Update rotation state
+      rotation.enabled = cmd.enabled;
+      rotation.direction = cmd.direction;
+      rotation.speed = cmd.speed * 0.1f;  // Convert to degrees per update
+
+      // Reset timer
+      lastRotationUpdateTime = millis();
+
       break;
     }
 
@@ -1387,6 +1433,21 @@ void loop() {
     }
   }
 
+  // ---- Rotation Mode Update ----
+  // If rotation mode is enabled, continuously update rotation offset
+  if (rotation.enabled && rotation.direction != 0) {
+    unsigned long timeSinceLastRotation = currentTime - lastRotationUpdateTime;
+    if (timeSinceLastRotation >= 50) {  // Update every 50ms
+      rotation.offset += rotation.speed * rotation.direction;
+
+      // Normalize offset to 0-360 range
+      while (rotation.offset < 0) rotation.offset += 360.0f;
+      while (rotation.offset >= 360.0f) rotation.offset -= 360.0f;
+
+      lastRotationUpdateTime = currentTime;
+    }
+  }
+
   // ---- Rendering ----
   // Clear canvas with current background color
   canvas->fillScreen(colors.currentBg);
@@ -1398,12 +1459,17 @@ void loop() {
   // Blend foreground color with background based on opacity
   uint16_t handColor = blendColor(colors.currentBg, colors.currentFg, opacity.current);
 
+  // Apply rotation offset if rotation mode is enabled
+  float displayAngle1 = hand1.currentAngle + rotation.offset;
+  float displayAngle2 = hand2.currentAngle + rotation.offset;
+  float displayAngle3 = hand3.currentAngle + rotation.offset;
+
   // Draw hands 1 and 2 with normal thickness
-  drawHand(CENTER_X, CENTER_Y, hand1.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
-  drawHand(CENTER_X, CENTER_Y, hand2.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
+  drawHand(CENTER_X, CENTER_Y, displayAngle1, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
+  drawHand(CENTER_X, CENTER_Y, displayAngle2, HAND_LENGTH_NORMAL, HAND_THICKNESS_NORMAL, handColor);
 
   // Draw hand 3 with thin thickness
-  drawHand(CENTER_X, CENTER_Y, hand3.currentAngle, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
+  drawHand(CENTER_X, CENTER_Y, displayAngle3, HAND_LENGTH_NORMAL, HAND_THICKNESS_THIN, handColor);
 
   // Draw center dot (always full opacity foreground color)
   canvas->fillCircle(CENTER_X, CENTER_Y, 4, colors.currentFg);

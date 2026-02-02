@@ -85,10 +85,7 @@ unsigned long chaoticDuration;  // Randomized each cycle
 uint8_t scatterCurrentMinute = 0;
 bool scatterShouldShowTimeNext = true;  // Start with time display
 float twoHandSeparation = 0;  // For TWO_HAND_RANDOM patterns
-unsigned long lastRotationTime = 0;  // For rotating patterns
-float currentRotation = 0;  // Current rotation angle
-const unsigned long ROTATION_INTERVAL = 50;  // Update rotation every 50ms
-const float ROTATION_SPEED = 1.0f;  // Degrees per update
+uint8_t lastColorIndex = 0;  // Color from convergence phase (to maintain during rotation)
 
 // ===== HELPER FUNCTIONS =====
 
@@ -209,25 +206,10 @@ void getBaseSwarmAngles(uint8_t pixelId, SwarmPattern pattern, float& angle1, fl
   while (angle3 >= 360.0f) angle3 -= 360.0f;
 }
 
-// Get swarm angles with rotation applied (used during UNIFIED phase)
+// Wrapper function for compatibility (rotation now handled by pixels)
 void getSwarmAngles(uint8_t pixelId, SwarmPattern pattern, float& angle1, float& angle2, float& angle3) {
-  // Get base angles without rotation
+  // Just call base function - pixels handle rotation autonomously now
   getBaseSwarmAngles(pixelId, pattern, angle1, angle2, angle3);
-
-  // Apply rotation based on current rotation mode
-  float rotationOffset = currentRotation * getRotationMultiplier(pixelId, currentRotationMode);
-
-  angle1 += rotationOffset;
-  angle2 += rotationOffset;
-  angle3 += rotationOffset;
-
-  // Normalize angles to 0-360
-  while (angle1 < 0) angle1 += 360.0f;
-  while (angle2 < 0) angle2 += 360.0f;
-  while (angle3 < 0) angle3 += 360.0f;
-  while (angle1 >= 360.0f) angle1 -= 360.0f;
-  while (angle2 >= 360.0f) angle2 -= 360.0f;
-  while (angle3 >= 360.0f) angle3 -= 360.0f;
 }
 
 // Send scatter command - random positions for all pixels
@@ -335,9 +317,7 @@ void sendConvergePattern(SwarmPattern pattern) {
     twoHandSeparation = random(90, 270);  // Random separation between hands
   }
 
-  // Initialize rotation for all patterns
-  currentRotation = 0;
-  lastRotationTime = millis();
+  // Choose rotation mode for this unified phase
   currentRotationMode = (RotationMode)random(2);  // Randomly choose unified or alternating
 
   ESPNowPacket packet;
@@ -346,17 +326,18 @@ void sendConvergePattern(SwarmPattern pattern) {
   packet.angleCmd.transition = TRANSITION_EASE_IN_OUT;
   packet.angleCmd.duration = floatToDuration(CONVERGE_DURATION);
 
-  uint8_t colorIndex = getRandomColorIndex();
+  // Pick a random color and save it for rotation phase
+  lastColorIndex = getRandomColorIndex();
 
-  // Each pixel converges to its swarm position
+  // Each pixel converges to its base swarm position (without rotation)
   for (int i = 0; i < MAX_PIXELS; i++) {
     float angle1, angle2, angle3;
-    getSwarmAngles(i, pattern, angle1, angle2, angle3);
+    getBaseSwarmAngles(i, pattern, angle1, angle2, angle3);
 
     RotationDirection dir = DIR_SHORTEST;  // Smooth convergence
 
     packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3, dir, dir, dir);
-    packet.angleCmd.setPixelStyle(i, colorIndex, 255);
+    packet.angleCmd.setPixelStyle(i, lastColorIndex, 255);
   }
 
   ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket));
@@ -366,33 +347,59 @@ void sendConvergePattern(SwarmPattern pattern) {
   Serial.println(getSwarmPatternName(pattern));
 }
 
-// Update rotating pattern (for ALL patterns during UNIFIED phase)
-void updateRotatingPattern() {
-  currentRotation += ROTATION_SPEED;  // Increment rotation
-  if (currentRotation >= 360.0f) currentRotation -= 360.0f;
-
+// Enable rotation mode on pixels
+void enableRotation() {
   ESPNowPacket packet;
-  packet.angleCmd.command = CMD_SET_ANGLES;
-  packet.angleCmd.clearTargetMask();
-  packet.angleCmd.transition = TRANSITION_LINEAR;
-  packet.angleCmd.duration = floatToDuration(0.1f);  // Smooth rotation
+  packet.rotationCmd.command = CMD_SET_ROTATION;
+  packet.rotationCmd.clearTargetMask();  // Target all pixels
+  packet.rotationCmd.enabled = true;
+  packet.rotationCmd.speed = 10;  // 10 * 0.1 = 1.0 degrees per 50ms = 20 degrees/second
+  packet.rotationCmd.resetOffset = true;  // Start fresh
+  packet.rotationCmd.colorIndex = lastColorIndex;  // Maintain color from convergence
 
-  uint8_t colorIndex = 2;  // Keep same color during rotation
-
+  // Set direction per pixel based on rotation mode
   for (int i = 0; i < MAX_PIXELS; i++) {
-    float angle1, angle2, angle3;
-    getSwarmAngles(i, currentSwarmPattern, angle1, angle2, angle3);
-
-    // Determine rotation direction per pixel based on mode
-    float multiplier = getRotationMultiplier(i, currentRotationMode);
-    RotationDirection dir = (multiplier > 0) ? DIR_CW : DIR_CCW;
-
-    packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3, dir, dir, dir);
-    packet.angleCmd.setPixelStyle(i, colorIndex, 255);
+    int8_t direction = (int8_t)getRotationMultiplier(i, currentRotationMode);
+    // For broadcast, we need to set it once (all pixels will use the same direction
+    // if unified, or we need individual targeting if alternating)
+    if (currentRotationMode == ROTATION_ALTERNATING) {
+      // Need to send individual commands for alternating
+      packet.rotationCmd.clearTargetMask();
+      packet.rotationCmd.setTargetPixel(i);
+      packet.rotationCmd.direction = direction;
+      ESPNowComm::sendPacket(&packet, sizeof(RotationCommandPacket));
+      lastCommandTime = millis();
+      delay(5);  // Small delay between packets
+    }
   }
 
-  ESPNowComm::sendPacket(&packet, sizeof(AngleCommandPacket));
+  // For unified mode, send once to all pixels
+  if (currentRotationMode == ROTATION_UNIFIED) {
+    packet.rotationCmd.clearTargetMask();  // Broadcast
+    packet.rotationCmd.direction = 1;  // All CW
+    ESPNowComm::sendPacket(&packet, sizeof(RotationCommandPacket));
+    lastCommandTime = millis();
+  }
+
+  Serial.print("Rotation enabled: ");
+  Serial.println(currentRotationMode == ROTATION_UNIFIED ? "Unified" : "Alternating");
+}
+
+// Disable rotation mode on pixels
+void disableRotation() {
+  ESPNowPacket packet;
+  packet.rotationCmd.command = CMD_SET_ROTATION;
+  packet.rotationCmd.clearTargetMask();  // Target all pixels
+  packet.rotationCmd.enabled = false;
+  packet.rotationCmd.direction = 0;
+  packet.rotationCmd.speed = 0;
+  packet.rotationCmd.resetOffset = false;
+  packet.rotationCmd.colorIndex = lastColorIndex;
+
+  ESPNowComm::sendPacket(&packet, sizeof(RotationCommandPacket));
   lastCommandTime = millis();
+
+  Serial.println("Rotation disabled");
 }
 
 // Send time digit pattern using digit_display library
@@ -539,20 +546,22 @@ void handleScatterFlockLoop(unsigned long currentTime) {
       if (currentTime - phaseStartTime >= (unsigned long)(CONVERGE_DURATION * 1000)) {
         scatterPhase = SCATTER_UNIFIED;
         phaseStartTime = currentTime;
+        // Enable rotation mode on pixels (they'll rotate autonomously)
+        enableRotation();
         updateScatterFlockDisplay();
       }
       break;
     }
 
     case SCATTER_UNIFIED: {
-      // Continuously rotate ALL patterns during unified phase
-      if (currentTime - lastRotationTime >= ROTATION_INTERVAL) {
-        updateRotatingPattern();
-        lastRotationTime = currentTime;
-      }
+      // Pixels are now rotating autonomously - no commands needed
 
       // Hold unified pattern (now twice as long)
       if (currentTime - phaseStartTime >= UNIFIED_DURATION) {
+        // Disable rotation before scattering
+        disableRotation();
+        delay(50);  // Brief pause for command to process
+
         // Scatter back to chaos
         sendScatterPattern();
         scatterPhase = SCATTER_CHAOTIC;
