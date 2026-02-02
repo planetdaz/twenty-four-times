@@ -326,8 +326,7 @@ struct __attribute__((packed)) RotationCommandPacket {
                                  // e.g., 10 = 1.0 degrees per 50ms = 20 degrees/second
   bool resetOffset;              // If true, reset rotation offset to 0 before enabling
   uint8_t targetMask[3];         // Bitmask for which pixels should respond
-  uint8_t colorIndex;            // Color to maintain during rotation (from last SET_ANGLES)
-  uint8_t reserved[11];          // Reserved for future use
+  uint8_t reserved[12];          // Reserved for future use (removed colorIndex - color comes from SET_ANGLES)
 
   // Helper to clear target mask (all zeros = target all pixels)
   void clearTargetMask() {

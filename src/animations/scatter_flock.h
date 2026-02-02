@@ -348,14 +348,16 @@ void sendConvergePattern(SwarmPattern pattern) {
 }
 
 // Enable rotation mode on pixels
-void enableRotation() {
+void enableRotation(bool resetOffset = false) {
+  // Randomize rotation speed for variety (8-15 = 0.8-1.5 degrees per 50ms = 16-30 deg/sec)
+  uint8_t rotationSpeed = random(8, 16);
+
   ESPNowPacket packet;
   packet.rotationCmd.command = CMD_SET_ROTATION;
   packet.rotationCmd.clearTargetMask();  // Target all pixels
   packet.rotationCmd.enabled = true;
-  packet.rotationCmd.speed = 10;  // 10 * 0.1 = 1.0 degrees per 50ms = 20 degrees/second
-  packet.rotationCmd.resetOffset = true;  // Start fresh
-  packet.rotationCmd.colorIndex = lastColorIndex;  // Maintain color from convergence
+  packet.rotationCmd.speed = rotationSpeed;
+  packet.rotationCmd.resetOffset = resetOffset;  // Only reset for time display
 
   // Set direction per pixel based on rotation mode
   for (int i = 0; i < MAX_PIXELS; i++) {
@@ -381,7 +383,11 @@ void enableRotation() {
     lastCommandTime = millis();
   }
 
-  Serial.print("Rotation enabled: ");
+  Serial.print("Rotation enabled (speed=");
+  Serial.print(rotationSpeed * 0.1f);
+  Serial.print(" deg/50ms, reset=");
+  Serial.print(resetOffset);
+  Serial.print("): ");
   Serial.println(currentRotationMode == ROTATION_UNIFIED ? "Unified" : "Alternating");
 }
 
@@ -394,7 +400,6 @@ void disableRotation() {
   packet.rotationCmd.direction = 0;
   packet.rotationCmd.speed = 0;
   packet.rotationCmd.resetOffset = false;
-  packet.rotationCmd.colorIndex = lastColorIndex;
 
   ESPNowComm::sendPacket(&packet, sizeof(RotationCommandPacket));
   lastCommandTime = millis();
@@ -524,13 +529,25 @@ void handleScatterFlockLoop(unsigned long currentTime) {
       // Check if time to converge
       if (currentTime - phaseStartTime >= chaoticDuration) {
         if (scatterShouldShowTimeNext) {
+          // Reset rotation offset and disable before showing time (so digits align properly)
+          enableRotation(true);  // Reset offset
+          delay(20);
+          disableRotation();
+          delay(20);
+
           // Converge to time display
           scatterCurrentMinute = getCurrentMinute();
           sendTimePattern(scatterCurrentMinute);
           scatterPhase = SCATTER_SHOWING_TIME;
           scatterShouldShowTimeNext = false;
         } else {
-          // Converge to random swarm pattern
+          // Choose new rotation mode and enable rotation BEFORE converging
+          // This creates smooth rotation during the transition
+          currentRotationMode = (RotationMode)random(2);
+          enableRotation(false);  // Don't reset - let it continue from current offset
+          delay(20);
+
+          // Converge to random swarm pattern (rotation continues during transition)
           currentSwarmPattern = getRandomSwarmPattern();
           sendConvergePattern(currentSwarmPattern);
           scatterPhase = SCATTER_CONVERGING;
@@ -543,26 +560,22 @@ void handleScatterFlockLoop(unsigned long currentTime) {
 
     case SCATTER_CONVERGING: {
       // Wait for convergence animation to complete
+      // Rotation is already active and continues during transition
       if (currentTime - phaseStartTime >= (unsigned long)(CONVERGE_DURATION * 1000)) {
         scatterPhase = SCATTER_UNIFIED;
         phaseStartTime = currentTime;
-        // Enable rotation mode on pixels (they'll rotate autonomously)
-        enableRotation();
         updateScatterFlockDisplay();
       }
       break;
     }
 
     case SCATTER_UNIFIED: {
-      // Pixels are now rotating autonomously - no commands needed
+      // Pixels are rotating autonomously - no commands needed
 
       // Hold unified pattern (now twice as long)
       if (currentTime - phaseStartTime >= UNIFIED_DURATION) {
-        // Disable rotation before scattering
-        disableRotation();
-        delay(50);  // Brief pause for command to process
-
-        // Scatter back to chaos
+        // Keep rotation active! Don't disable it
+        // Scatter back to chaos (rotation continues during scatter and chaos phase)
         sendScatterPattern();
         scatterPhase = SCATTER_CHAOTIC;
         phaseStartTime = currentTime;
@@ -586,7 +599,12 @@ void handleScatterFlockLoop(unsigned long currentTime) {
     case SCATTER_HOLDING_TIME: {
       // Hold time display
       if (currentTime - phaseStartTime >= SCATTER_TIME_HOLD_DURATION) {
-        // Scatter back to chaos
+        // Re-enable rotation before scattering (so it continues in chaos)
+        currentRotationMode = (RotationMode)random(2);
+        enableRotation(false);  // Don't reset - start rotating from current position
+        delay(20);
+
+        // Scatter back to chaos (rotation active during scatter and chaos)
         sendScatterPattern();
         scatterPhase = SCATTER_CHAOTIC;
         phaseStartTime = currentTime;
