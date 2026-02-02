@@ -46,6 +46,12 @@ enum TwitchPattern {
   TWITCH_ONE_HAND           // 1 hand (all 3 same angle), snap to 0/45/90/135
 };
 
+// Rotation direction modes for unified phase
+enum RotationMode {
+  ROTATION_UNIFIED,         // All pixels rotate same direction
+  ROTATION_ALTERNATING      // Neighbors alternate direction (+1, -1, +1, -1...)
+};
+
 // ===== STATE TRACKING =====
 
 enum ScatterPhase {
@@ -65,7 +71,7 @@ unsigned long lastTimeDisplayTrigger = 0;
 const unsigned long CHAOTIC_DURATION_MIN = 3000;   // Min time in chaos (3s)
 const unsigned long CHAOTIC_DURATION_MAX = 8000;   // Max time in chaos (8s)
 const unsigned long TWITCH_INTERVAL = 500;          // Twitch every 0.5s while chaotic
-const unsigned long UNIFIED_DURATION = 2000;        // Hold unified for 2s
+const unsigned long UNIFIED_DURATION = 4000;        // Hold unified for 4s (doubled)
 const unsigned long TIME_DISPLAY_INTERVAL = 60000;  // Show time every 60s
 const unsigned long SCATTER_TIME_HOLD_DURATION = 6000;      // Hold time for 6s
 const float CONVERGE_DURATION = 2.0f;               // 2 seconds to converge
@@ -74,13 +80,15 @@ const float SCATTER_DURATION = 1.5f;                // 1.5 seconds to scatter
 // Current state
 SwarmPattern currentSwarmPattern;
 TwitchPattern currentTwitchPattern;
+RotationMode currentRotationMode;
 unsigned long chaoticDuration;  // Randomized each cycle
 uint8_t scatterCurrentMinute = 0;
 bool scatterShouldShowTimeNext = true;  // Start with time display
 float twoHandSeparation = 0;  // For TWO_HAND_RANDOM patterns
-unsigned long lastRotationTime = 0;  // For rotating gears
-float currentRotation = 0;  // Current rotation angle for gears
+unsigned long lastRotationTime = 0;  // For rotating patterns
+float currentRotation = 0;  // Current rotation angle
 const unsigned long ROTATION_INTERVAL = 50;  // Update rotation every 50ms
+const float ROTATION_SPEED = 1.0f;  // Degrees per update
 
 // ===== HELPER FUNCTIONS =====
 
@@ -113,8 +121,25 @@ float snapTo45(float angle) {
   return increment * 45.0f;
 }
 
-// Calculate angle for swarm pattern based on pixel position
-void getSwarmAngles(uint8_t pixelId, SwarmPattern pattern, float& angle1, float& angle2, float& angle3) {
+// Get rotation multiplier for pixel based on rotation mode
+float getRotationMultiplier(uint8_t pixelId, RotationMode mode) {
+  switch (mode) {
+    case ROTATION_UNIFIED:
+      // All pixels rotate same direction
+      return 1.0f;
+
+    case ROTATION_ALTERNATING:
+      // Neighbors alternate: +1, -1, +1, -1...
+      // Alternate based on pixel ID
+      return (pixelId % 2 == 0) ? 1.0f : -1.0f;
+
+    default:
+      return 1.0f;
+  }
+}
+
+// Calculate base angle for swarm pattern based on pixel position (without rotation)
+void getBaseSwarmAngles(uint8_t pixelId, SwarmPattern pattern, float& angle1, float& angle2, float& angle3) {
   // Convert pixel ID to grid position (3 rows x 8 columns)
   uint8_t row = pixelId / 8;
   uint8_t col = pixelId % 8;
@@ -153,10 +178,9 @@ void getSwarmAngles(uint8_t pixelId, SwarmPattern pattern, float& angle1, float&
 
     case SWARM_RADIAL:
       // Mercedes logo - 3 hands evenly spaced (120° apart)
-      // Add current rotation for animated gears effect
-      angle1 = angleToCenter + currentRotation;
-      angle2 = angleToCenter + currentRotation + 120.0f;
-      angle3 = angleToCenter + currentRotation + 240.0f;
+      angle1 = angleToCenter;
+      angle2 = angleToCenter + 120.0f;
+      angle3 = angleToCenter + 240.0f;
       break;
 
     case SWARM_TWO_HAND_SWIRL:
@@ -175,6 +199,27 @@ void getSwarmAngles(uint8_t pixelId, SwarmPattern pattern, float& angle1, float&
       angle3 = angle1;  // Hide third hand
       break;
   }
+
+  // Normalize angles to 0-360
+  while (angle1 < 0) angle1 += 360.0f;
+  while (angle2 < 0) angle2 += 360.0f;
+  while (angle3 < 0) angle3 += 360.0f;
+  while (angle1 >= 360.0f) angle1 -= 360.0f;
+  while (angle2 >= 360.0f) angle2 -= 360.0f;
+  while (angle3 >= 360.0f) angle3 -= 360.0f;
+}
+
+// Get swarm angles with rotation applied (used during UNIFIED phase)
+void getSwarmAngles(uint8_t pixelId, SwarmPattern pattern, float& angle1, float& angle2, float& angle3) {
+  // Get base angles without rotation
+  getBaseSwarmAngles(pixelId, pattern, angle1, angle2, angle3);
+
+  // Apply rotation based on current rotation mode
+  float rotationOffset = currentRotation * getRotationMultiplier(pixelId, currentRotationMode);
+
+  angle1 += rotationOffset;
+  angle2 += rotationOffset;
+  angle3 += rotationOffset;
 
   // Normalize angles to 0-360
   while (angle1 < 0) angle1 += 360.0f;
@@ -289,10 +334,11 @@ void sendConvergePattern(SwarmPattern pattern) {
   if (pattern == SWARM_TWO_HAND_RANDOM) {
     twoHandSeparation = random(90, 270);  // Random separation between hands
   }
-  if (pattern == SWARM_RADIAL) {
-    currentRotation = 0;  // Reset rotation
-    lastRotationTime = millis();
-  }
+
+  // Initialize rotation for all patterns
+  currentRotation = 0;
+  lastRotationTime = millis();
+  currentRotationMode = (RotationMode)random(2);  // Randomly choose unified or alternating
 
   ESPNowPacket packet;
   packet.angleCmd.command = CMD_SET_ANGLES;
@@ -320,9 +366,9 @@ void sendConvergePattern(SwarmPattern pattern) {
   Serial.println(getSwarmPatternName(pattern));
 }
 
-// Update rotating gears (for RADIAL pattern during UNIFIED phase)
-void updateRotatingGears() {
-  currentRotation += 2.0f;  // Rotate 2 degrees
+// Update rotating pattern (for ALL patterns during UNIFIED phase)
+void updateRotatingPattern() {
+  currentRotation += ROTATION_SPEED;  // Increment rotation
   if (currentRotation >= 360.0f) currentRotation -= 360.0f;
 
   ESPNowPacket packet;
@@ -335,9 +381,11 @@ void updateRotatingGears() {
 
   for (int i = 0; i < MAX_PIXELS; i++) {
     float angle1, angle2, angle3;
-    getSwarmAngles(i, SWARM_RADIAL, angle1, angle2, angle3);
+    getSwarmAngles(i, currentSwarmPattern, angle1, angle2, angle3);
 
-    RotationDirection dir = DIR_CW;  // All rotate clockwise
+    // Determine rotation direction per pixel based on mode
+    float multiplier = getRotationMultiplier(i, currentRotationMode);
+    RotationDirection dir = (multiplier > 0) ? DIR_CW : DIR_CCW;
 
     packet.angleCmd.setPixelAngles(i, angle1, angle2, angle3, dir, dir, dir);
     packet.angleCmd.setPixelStyle(i, colorIndex, 255);
@@ -497,15 +545,13 @@ void handleScatterFlockLoop(unsigned long currentTime) {
     }
 
     case SCATTER_UNIFIED: {
-      // If radial pattern, continuously rotate the gears
-      if (currentSwarmPattern == SWARM_RADIAL) {
-        if (currentTime - lastRotationTime >= ROTATION_INTERVAL) {
-          updateRotatingGears();
-          lastRotationTime = currentTime;
-        }
+      // Continuously rotate ALL patterns during unified phase
+      if (currentTime - lastRotationTime >= ROTATION_INTERVAL) {
+        updateRotatingPattern();
+        lastRotationTime = currentTime;
       }
 
-      // Hold unified pattern briefly
+      // Hold unified pattern (now twice as long)
       if (currentTime - phaseStartTime >= UNIFIED_DURATION) {
         // Scatter back to chaos
         sendScatterPattern();
