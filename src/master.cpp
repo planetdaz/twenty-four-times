@@ -14,6 +14,8 @@
 // ===== WIFI & TIME CONFIGURATION =====
 const char* WIFI_SSID = "Frontier5664";
 const char* WIFI_PASSWORD = "8854950591";
+// const char* WIFI_SSID = "FSBR-Guest";
+// const char* WIFI_PASSWORD = "DGShowroom2017";
 const char* NTP_SERVER = "pool.ntp.org";
 const long GMT_OFFSET_SEC = -6 * 3600;  // UTC-6 (CST)
 const int DAYLIGHT_OFFSET_SEC = 0;      // Set to 3600 if DST is active
